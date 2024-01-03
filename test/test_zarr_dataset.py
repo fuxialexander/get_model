@@ -53,7 +53,7 @@ sns.distplot(np.concatenate(peak_len))
 data_loader_train = torch.utils.data.DataLoader(
     pretrain,
     batch_size=32,
-    num_workers=16,
+    num_workers=2,
     pin_memory=True,
     drop_last=True,
     collate_fn=get_rev_collate_fn
@@ -65,7 +65,7 @@ for i, batch in tqdm(enumerate(data_loader_train)):
     if min(chunk_size)<0:
         continue
     # if max_n_peaks>200:
-    #     break
+    break
 # %%
 celltype_peaks.shape
 # %%
@@ -80,7 +80,7 @@ from get_model.model.model import GETPretrain
 model = GETPretrain(
         num_regions=200,
         num_res_block=0,
-        motif_prior=False,
+        motif_prior=True,
         embed_dim=768,
         num_layers=12,
         d_model=768,
@@ -90,7 +90,7 @@ model = GETPretrain(
         output_dim=1274,
         pos_emb_components=[],
     )
-model.train()
+model.eval()
 #%%
 model.cuda()
 # #%%
@@ -106,19 +106,26 @@ bool_mask_pos[bool_mask_pos == -10000] = 0
 #%%
 sample_peak_sequence = sample_peak_sequence.bfloat16().cuda()
 sample_track = sample_track.bfloat16().cuda()
+#%%
 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
     for i in tqdm(range(100)):
-        a = model.forward(sample_peak_sequence, sample_track, bool_mask_pos.bool().cuda(), chunk_size, n_peaks.cuda(), max_n_peaks)
+        a = model.forward(sample_peak_sequence, torch.log10(sample_track+1)/torch.log10(sample_track+1).mean(), bool_mask_pos.bool().cuda(), chunk_size, n_peaks.cuda(), max_n_peaks)
+        break
 
 #%%
-
 #%%
-(a[2]-a[0]).sum().backward()
+import seaborn as sns
+d = a[2].cpu().numpy().reshape(-1,1274)
+d = d[d.max(axis=1)>1]
+d = d/d.mean(axis=0)
+d= np.log2(d+1)
+#%%
+sns.clustermap(d/d.mean(axis=0))
 # %%
 a[0].shape
 # %%
 a[2].device
 # %%
 import pandas as pd 
-pd.read_csv('../log.txt', sep='loss', skiprows=442).iloc[:,1].str.split('(').str[1].str.split(')').str[0].astype(float).plot()
+pd.read_csv('../log.txt', sep='loss', skiprows=442).iloc[:,1].str.split('(').str[1].str.split(')').str[0].astype(float).plot(xlim=(-200,1562*10), ylim=(0.3, 0.6))
 # %%
