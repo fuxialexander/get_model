@@ -191,7 +191,8 @@ class ATACAttention(nn.Module):
         super().__init__()
 
     def forward(self, peak_seq, atac):
-        return peak_seq * atac.unsqueeze(-1)
+        atac_sum = atac.sum(dim=1, keepdim=True)
+        return peak_seq * (atac.unsqueeze(-1)/atac_sum.unsqueeze(-1)), atac_sum
         # return torch.einsum("bld,blc->blcd", peak_seq, atac).sum(dim=2)
     
 
@@ -267,14 +268,14 @@ class GETPretrain(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def forward(self, peak_seq, atac, mask, chunk_size, n_peaks, max_n_peaks):
+    def forward(self, peak_seq, atac, mask, chunk_size, n_peaks, max_n_peaks, sample_total_depth):
         """forward function with hooks to return embedding or attention weights."""
         # peak_seq: [B, L, 4]
         # [B, L, 4] --> [B, L, 1274]
         x = self.motif_scanner(peak_seq)
         # [B, L, 1274] --> [B, R, 1274]
         # gloabl pooling inner product with peak
-        x = self.atac_attention(x, atac)
+        x, atac_sum = self.atac_attention(x, atac)
         x_original = self.split_pool(x, chunk_size, n_peaks, max_n_peaks)
 
         x = self.region_embed(x_original)
@@ -292,8 +293,8 @@ class GETPretrain(nn.Module):
         x, _ = self.encoder(x, mask=mask) # (N, D)
         x_masked = self.head_mask(x) # (N, Motif)
         # x_masked = x_masked[mask].reshape(B, -1, C)
-        # atac = F.softplus(self.head_atac(x.permute(0, 2, 1)).permute(0, 2, 1).squeeze(-1))
-        atac = None
+        atac = F.softplus(self.head_atac(x.permute(0, 2, 1)).permute(0, 2, 1).squeeze(-1))
+        # atac = None
         
         return x_masked, atac, x_original
 

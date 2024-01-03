@@ -46,6 +46,7 @@ def get_rev_collate_fn(batch):
     sample_len_max = max([len(x.getnnz(1)) for x in sample_peak_sequence])
     sample_track_boundary = []
     sample_peak_sequence_boundary = []
+    sample_total_depth = []
     # pad each peaks in the end with 0
     for i in range(len(celltype_peaks)):
         celltype_peaks[i] = np.pad(celltype_peaks[i], ((0, n_peak_max - len(celltype_peaks[i])), (0,0)))
@@ -56,6 +57,7 @@ def get_rev_collate_fn(batch):
         sample_peak_sequence[i] = sample_peak_sequence[i].todense()
         cov = (celltype_peaks[i][:,1]-celltype_peaks[i][:,0]).sum()
         real_cov = sample_track[i].sum()
+        sample_total_depth.append(real_cov)
         conv = int(min(500, max(100, int(cov/(real_cov+20)))))
         sample_track[i] = np.convolve(np.array(sample_track[i]).reshape(-1), np.ones(conv), mode='same')
 
@@ -66,6 +68,7 @@ def get_rev_collate_fn(batch):
     sample_peak_sequence = np.hstack(sample_peak_sequence)
     sample_peak_sequence = torch.from_numpy(sample_peak_sequence).view(-1, batch_size, 4)
     sample_peak_sequence = sample_peak_sequence.transpose(0,1)
+    sample_total_depth = torch.IntTensorTensor(sample_total_depth)
     peak_len = celltype_peaks[:,:,1]-celltype_peaks[:,:,0]
     padded_peak_len = peak_len + 100
     total_peak_len = peak_len.sum(1)
@@ -87,4 +90,4 @@ def get_rev_collate_fn(batch):
 
     
 
-    return sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, chunk_size, mask, n_peaks, max_n_peaks, total_peak_len
+    return sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, chunk_size, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_depth

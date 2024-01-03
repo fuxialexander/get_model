@@ -20,3 +20,6 @@ data/cell_type_pretrain_exp.txt
 data/motif_cluster_original_id.txt
 test/hail*
 test/data
+data/grch37_to_grch38.over.chain.gz
+data/grch38_to_grch37.over.chain.gz
+test/test_hail.py
