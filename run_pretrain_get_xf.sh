@@ -12,6 +12,7 @@ OMP_NUM_THREADS=1 torchrun --nproc_per_node=8 --rdzv-endpoint=localhost:$PORT ge
     --data_set "Pretrain" \
     --data_path ${DATA_PATH} \
     --input_dim 1274 \
+    --output_dim 1290 \
     --num_motif 637 \
     --mask_ratio 0.5 \
     --model get_pretrain_motif_base \
