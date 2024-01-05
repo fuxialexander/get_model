@@ -13,6 +13,7 @@ def pool(x, method='mean'):
         return x.max(0)
     elif method == 'mean':
         return x.mean(0)
+    
 
 
 class SplitPool(nn.Module):
@@ -30,7 +31,7 @@ class SplitPool(nn.Module):
         self.pool_method = pool_method
 
 
-    def forward(self, x, chunk_size, n_peaks, max_n_peaks):
+    def forward(self, x, peak_split, n_peaks, max_n_peaks):
         """
         x: (batch, length, dimension)
         chunk_size: the size of each chunk to pool        
@@ -39,7 +40,7 @@ class SplitPool(nn.Module):
         pool_method: the method to pool the tensor
         """
         batch, length, embed_dim = x.shape
-        chunk_list = torch.split(x.reshape(-1,embed_dim), chunk_size, dim=0)
+        chunk_list = torch.split(x.reshape(-1,embed_dim), peak_split, dim=0)
         # each element is L, D, pool the tensor
         chunk_list = torch.vstack([pool(chunk, self.pool_method) for chunk in chunk_list])
         # remove the padded part
@@ -50,7 +51,6 @@ class SplitPool(nn.Module):
         pool_list = [chunk_list[pool_start[i]:pool_end[i]] for i in range(len(pool_start))]
         # pad the element in pool_list if the number of peaks is not the same
         x = torch.stack([torch.cat([pool_list[i], torch.zeros(max_n_peaks-n_peaks[i], embed_dim).to(pool_list[i].device)]) for i in range(len(pool_list))])
-
         return x
 
 

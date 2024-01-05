@@ -34,11 +34,12 @@ def sparse_batch_collate(batch: list):
 
 def get_rev_collate_fn(batch):
     # zip and convert to list
-    sample_track, sample_peak_sequence, sample_metadata, celltype_peaks = zip(*batch)
+    sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, motif_mean_std = zip(*batch)
     celltype_peaks = list(celltype_peaks)
     sample_track = list(sample_track)
     sample_peak_sequence = list(sample_peak_sequence)
     sample_metadata = list(sample_metadata)
+    motif_mean_std = list(motif_mean_std)
     batch_size = len(celltype_peaks)
     mask_ratio = sample_metadata[0]['mask_ratio']
 
@@ -46,7 +47,8 @@ def get_rev_collate_fn(batch):
     sample_len_max = max([len(x.getnnz(1)) for x in sample_peak_sequence])
     sample_track_boundary = []
     sample_peak_sequence_boundary = []
-    sample_total_depth = []
+    sample_total_insertion = []
+    conv_sizes = []
     # pad each peaks in the end with 0
     for i in range(len(celltype_peaks)):
         celltype_peaks[i] = np.pad(celltype_peaks[i], ((0, n_peak_max - len(celltype_peaks[i])), (0,0)))
@@ -55,20 +57,26 @@ def get_rev_collate_fn(batch):
         sample_peak_sequence[i].resize((sample_len_max, sample_peak_sequence[i].shape[1]))
         sample_track[i] = sample_track[i].todense()
         sample_peak_sequence[i] = sample_peak_sequence[i].todense()
-        cov = (celltype_peaks[i][:,1]-celltype_peaks[i][:,0]).sum()
-        real_cov = sample_track[i].sum()
-        sample_total_depth.append(real_cov)
-        conv = int(min(500, max(100, int(cov/(real_cov+20)))))
-        sample_track[i] = np.convolve(np.array(sample_track[i]).reshape(-1), np.ones(conv), mode='same')
+        peak_span = (celltype_peaks[i][:,1]-celltype_peaks[i][:,0]).sum()
+        insertion = sample_track[i].sum()
+        sample_total_insertion.append(insertion)
+        conv_size = int(min(250, max(50, int(peak_span/(insertion+20)))))
+        conv_sizes.append(conv_size)
+        sample_track[i] = np.convolve(np.array(sample_track[i]).reshape(-1), np.ones(conv_size)/conv_size, mode='same')
+        if sample_track[i].max() > 0:
+            sample_track[i] = sample_track[i]/sample_track[i].max()
 
     celltype_peaks = np.stack(celltype_peaks, axis=0)
-    celltype_peaks = torch.from_numpy(celltype_peaks)
+    celltype_peaks = torch.from_numpy(celltype_peaks) # (B, R, 2)
     sample_track = np.stack(sample_track, axis=0)
-    sample_track = torch.from_numpy(sample_track)
+    sample_track = torch.from_numpy(sample_track) # (B, L, 4)
     sample_peak_sequence = np.hstack(sample_peak_sequence)
     sample_peak_sequence = torch.from_numpy(sample_peak_sequence).view(-1, batch_size, 4)
-    sample_peak_sequence = sample_peak_sequence.transpose(0,1)
-    sample_total_depth = torch.IntTensorTensor(sample_total_depth)
+    sample_peak_sequence = sample_peak_sequence.transpose(0,1) # (B, L, 4)
+    sample_total_insertion = torch.IntTensor(sample_total_insertion) # (B)
+    conv_sizes = torch.IntTensor(conv_sizes) # (B)
+    motif_mean_std = np.stack(motif_mean_std, axis=0)
+    motif_mean_std = torch.FloatTensor(motif_mean_std)
     peak_len = celltype_peaks[:,:,1]-celltype_peaks[:,:,0]
     padded_peak_len = peak_len + 100
     total_peak_len = peak_len.sum(1)
@@ -78,16 +86,14 @@ def get_rev_collate_fn(batch):
     peak_peadding_len = n_peaks*100
     tail_len = sample_peak_sequence.shape[1] - peak_peadding_len - peak_len.sum(1)
     # flatten the list
-    chunk_size = torch.cat([torch.cat([padded_peak_len[i][0:n],tail_len[i].unsqueeze(0)]) for i, n in enumerate(n_peaks)]).tolist()
-
+    peak_split = torch.cat([torch.cat([padded_peak_len[i][0:n],tail_len[i].unsqueeze(0)]) for i, n in enumerate(n_peaks)]).tolist()
+    # padding mask
     mask = torch.stack([torch.cat([torch.zeros(i), torch.zeros(max_n_peaks-i)-10000]) for i in n_peaks.tolist()])
     maskable_pos = (mask+10000).nonzero()
-
+    # add random mask
     for i in range(batch_size):
         maskable_pos_i = maskable_pos[maskable_pos[:,0]==i,1]
         idx = np.random.choice(maskable_pos_i, size=np.ceil(mask_ratio*len(maskable_pos_i)).astype(int), replace=False)
         mask[i,idx] = 1
 
-    
-
-    return sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, chunk_size, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_depth
+    return sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, peak_split, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_insertion, conv_sizes, motif_mean_std

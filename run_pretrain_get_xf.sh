@@ -17,6 +17,7 @@ OMP_NUM_THREADS=1 torchrun --nproc_per_node=4 --rdzv-endpoint=localhost:$PORT ge
     --batch_size 16 \
     --num_workers 64 \
     --preload_count 200 \
+    --normlize_target True \
     --center_expand_target 500 \
     --peak_name "peaks_q0.01_tissue" \
     --n_packs 1 \

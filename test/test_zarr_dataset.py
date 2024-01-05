@@ -114,18 +114,3 @@ with torch.amp.autocast('cuda', dtype=torch.bfloat16):
 
 #%%
 #%%
-import seaborn as sns
-d = a[2].cpu().numpy().reshape(-1,1274)
-d = d[d.max(axis=1)>1]
-d = d/d.mean(axis=0)
-d= np.log2(d+1)
-#%%
-sns.clustermap(d/d.mean(axis=0))
-# %%
-a[0].shape
-# %%
-a[2].device
-# %%
-import pandas as pd 
-pd.read_csv('../log.txt', sep='loss', skiprows=442).iloc[:,1].str.split('(').str[1].str.split(')').str[0].astype(float).plot(xlim=(-200,1562*10), ylim=(0.3, 0.6))
-# %%

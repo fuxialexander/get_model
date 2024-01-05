@@ -48,8 +48,8 @@ def pretrain_one_epoch(
     for step, (batch) in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
-        sample_track, peak_seq, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, chunk_size, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_depth = batch
-        if min(chunk_size)<0:
+        sample_track, peak_seq, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, peak_split, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_insertion, conv_sizes, motif_mean_std = batch
+        if min(peak_split)<0:
             continue
         # assign learning rate & weight decay for each step
         it = start_steps + step  # global training iteration
@@ -63,7 +63,8 @@ def pretrain_one_epoch(
 
         sample_track = sample_track.to(device, non_blocking=True).bfloat16()
         peak_seq = peak_seq.to(device, non_blocking=True).bfloat16()
-        sample_total_depth = sample_total_depth.to(device, non_blocking=True).bfloat16()
+        sample_total_insertion = sample_total_insertion.to(device, non_blocking=True).bfloat16()
+        motif_mean_std = motif_mean_std.to(device, non_blocking=True).bfloat16()
         bool_mask_pos = mask.clone()
         bool_mask_pos[bool_mask_pos==-10000]=0
         bool_mask_pos = bool_mask_pos.to(device, non_blocking=True).bool()
@@ -72,7 +73,7 @@ def pretrain_one_epoch(
 
 
         with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-            output_masked, _, target = model(peak_seq, sample_track, bool_mask_pos, chunk_size, n_peaks, max_n_peaks, sample_total_depth)
+            output_masked, _, target = model(peak_seq, sample_track, bool_mask_pos, peak_split, n_peaks, max_n_peaks, sample_total_insertion, motif_mean_std)
 
         # target generation
         with torch.no_grad():
