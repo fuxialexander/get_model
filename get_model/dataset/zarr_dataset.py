@@ -353,7 +353,7 @@ class PreloadDataPack(object):
         return df.set_index('key').to_dict()['index_peak']
 
 class PretrainDataset(Dataset):
-    def __init__(self, zarr_dirs, genome_seq_zarr, insulation_paths, peak_name='peaks', preload_count=50, padding=50, mask_ratio=0.5, n_packs=2, max_peak_length=None, center_expand_target=None, n_peaks_lower_bound=5, n_peaks_upper_bound=200, sequence_obj=None):
+    def __init__(self, zarr_dirs, genome_seq_zarr, genome_motif_zarr, insulation_paths, peak_name='peaks', preload_count=50, padding=50, mask_ratio=0.5, n_packs=2, max_peak_length=None, center_expand_target=None, n_peaks_lower_bound=5, n_peaks_upper_bound=200, sequence_obj=None):
         super().__init__()
         """
         Pretrain dataset for GET model.
@@ -416,7 +416,7 @@ class PretrainDataset(Dataset):
             self.sequence.load_to_memory_dense()
         else:
             self.sequence = sequence_obj
-        mms = MotifMeanStd('/pmglocal/xf2217/get_data/hg38_motif_result.zarr')
+        mms = MotifMeanStd(genome_motif_zarr)
         self.datapool = ZarrDataPool(zarr_dirs, genome_seq_zarr, insulation_paths, peak_name=peak_name, max_peak_length=max_peak_length, center_expand_target=center_expand_target, sequence_obj=self.sequence,
                                      motif_mean_std_obj=mms)
 
