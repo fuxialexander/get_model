@@ -12,14 +12,17 @@ OMP_NUM_THREADS=1 torchrun --nproc_per_node=8 --rdzv-endpoint=localhost:$PORT ge
     --data_set "Pretrain" \
     --data_path ${DATA_PATH} \
     --input_dim 1274 \
+    --output_dim 1290 \
     --num_motif 637 \
     --mask_ratio 0.5 \
     --model get_pretrain_motif_base \
-    --batch_size 16 \
+    --batch_size 8 \
     --num_workers 64 \
     --preload_count 200 \
     --pin_mem \
     --peak_name "peaks_q0.01_tissue_open" \
+    --normlize_target \
+    --center_expand_target 500 \
     --n_packs 1 \
     --flash_attn \
     --lr 1e-3 \

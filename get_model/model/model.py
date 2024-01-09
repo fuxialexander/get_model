@@ -9,7 +9,7 @@ from timm.models.registry import register_model
 from get_model.model.position_encoding import CTCFPositionalEncoding, AbsolutePositionalEncoding
 from get_model.model.motif import parse_meme_file
 from get_model.model.transformer import GETTransformer
-from get_model.model.pooling import SplitPool
+from get_model.model.pooling import SplitPool, ATACSplitPool
 
 class SequenceEncoder(nn.Module):
     """A sequence encoder based on Conv1D.
@@ -191,9 +191,39 @@ class ATACAttention(nn.Module):
         super().__init__()
 
     def forward(self, peak_seq, atac):
-        return peak_seq * atac.unsqueeze(-1)
+        atac_sum = torch.log10(atac.sum(dim=1, keepdim=True)+1)
+        return peak_seq * atac.unsqueeze(-1), atac_sum
         # return torch.einsum("bld,blc->blcd", peak_seq, atac).sum(dim=2)
     
+    
+class ATACAttentionConv(nn.Module):
+    def __init__(self, atac_kernel_num=16, motif_dim=1274, joint_kernel_num=16, atac_kernel_size=29, joint_kernel_size=29):
+        super().__init__()
+        self.atac_conv = nn.Conv1d(1, atac_kernel_num, atac_kernel_size, padding="same", dilation=10, bias=False)
+        self.joint_conv = nn.Conv1d(motif_dim + atac_kernel_num + 1, joint_kernel_num, joint_kernel_size, padding="same", bias=False, dilation=10)
+        self.joint_bn = nn.BatchNorm1d(joint_kernel_num)
+
+    def forward(self, peak_seq, atac):
+        atac_sum = torch.log10(atac.sum(dim=1, keepdim=True)+1)
+        atac = torch.log10(atac+1)
+        atac = atac/atac.max(dim=1, keepdim=True)[0]
+        atac = atac.unsqueeze(1) #(B, 1, L)
+        atac_conved = self.atac_conv(atac) 
+        atac = torch.concat([atac, atac_conved], dim=1)
+        atac = atac.permute(0, 2, 1)
+        
+        # concatenate atac to peak_seq
+        x = torch.cat([peak_seq, atac], dim=2)
+        x = self.joint_conv(x.permute(0, 2, 1))
+        x = self.joint_bn(x)
+        x = F.relu(x)
+        x = x.permute(0, 2, 1)
+        x = torch.cat([peak_seq, x], dim=2)
+        # atac is normalized to sum to 1
+        # akin to conv the peak_seq with atac and normalize by total atac area
+        # the more atac insertion, the footprint is more accurate
+        # the less atac insertion, the footprint is less accurate but smoothed by a larger conv during preprocessing
+        return x , atac_sum 
 
 class GETPretrain(nn.Module):
     """A GET model for pretraining using mask and prediction."""
@@ -210,14 +240,19 @@ class GETPretrain(nn.Module):
         d_model=768,
         nhead=12,
         dropout=0.1,
-        output_dim=1,
+        output_dim=1280,
         pos_emb_components=["CTCF", "Rotary", "Absolute"],
-        atac_attention=True,
-        flash_attn=False,
+        atac_attention='conv_pool',
+        flash_attn=True,
+        atac_kernel_num=6,
+        atac_kernel_size=3,
+        joint_kernel_num=6,
+        joint_kernel_size=3,
     ):
         super().__init__()
         self.num_regions = num_regions
         self.num_motif = num_motif
+        self.motif_dim = motif_dim
         self.num_res_block = num_res_block
         self.motif_prior = motif_prior
         self.embed_dim = embed_dim
@@ -230,9 +265,40 @@ class GETPretrain(nn.Module):
         self.motif_scanner = MotifScanner(
             num_motif=num_motif, target_dim=motif_dim, include_reverse_complement=True
         )
-        self.atac_attention = ATACAttention() if atac_attention else None
-        self.split_pool = SplitPool()
-        self.region_embed = RegionEmbed(num_regions, motif_dim, embed_dim)
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        if atac_attention is True:
+            self.atac_attention = ATACAttention()
+            self.atac_kernel_num = 0
+            self.atac_kernel_size = 0
+            self.joint_kernel_num = 0
+            self.joint_kernel_size = 0
+            self.split_pool = SplitPool(pool_method='mean')
+        elif atac_attention == "conv":
+            self.atac_attention = ATACAttentionConv(
+                atac_kernel_num=self.atac_kernel_num,
+                motif_dim=self.motif_dim,
+                joint_kernel_num=self.joint_kernel_num,
+                atac_kernel_size=self.atac_kernel_size,
+                joint_kernel_size=self.joint_kernel_size,
+            )
+            self.split_pool = SplitPool(pool_method='mean')
+        elif atac_attention == "conv_pool":
+            self.atac_attention = ATACSplitPool(
+                pool_method='mean',
+                atac_kernel_num=self.atac_kernel_num,
+                motif_dim=self.motif_dim,
+                joint_kernel_num=self.joint_kernel_num,
+                atac_kernel_size=self.atac_kernel_size,
+                joint_kernel_size=self.joint_kernel_size,
+            )
+            self.split_pool = None
+        else:
+            self.atac_attention = None
+            self.split_pool = SplitPool(pool_method='mean')
+        self.region_embed = RegionEmbed(self.num_regions, self.motif_dim+self.joint_kernel_num, self.embed_dim)
         self.pos_embed = []
         if "CTCF" in self.pos_emb_components: 
             self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
@@ -267,19 +333,23 @@ class GETPretrain(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def forward(self, peak_seq, atac, mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+    def forward(self, peak_seq, atac, mask, peak_split, n_peaks, max_n_peaks, sample_total_insertion, motif_mean_std):
         """forward function with hooks to return embedding or attention weights."""
         # peak_seq: [B, L, 4]
         # [B, L, 4] --> [B, L, 1274]
         x = self.motif_scanner(peak_seq)
+        # normalize by motif_mean_std [B, 2, 1274] mean at 0, std at 1
         x = x - motif_mean_std[:,0, :].unsqueeze(1)
         x = x / motif_mean_std[:,1, :].unsqueeze(1)
         x = F.relu(x)
         # [B, L, 1274] --> [B, R, 1274]
         # gloabl pooling inner product with peak
-        x = self.atac_attention(x, atac)
-        x_original = self.split_pool(x, chunk_size, n_peaks, max_n_peaks)
-
+        if isinstance(self.atac_attention, ATACSplitPool):
+            x_original, atac_sum = self.atac_attention(x, atac, peak_split, n_peaks, max_n_peaks)
+        else:
+            x, atac_sum = self.atac_attention(x, atac)
+            x_original = self.split_pool(x, peak_split, n_peaks, max_n_peaks)
+        
         x = self.region_embed(x_original)
         B, N, C = x_original.shape
         mask_token = self.mask_token.expand(B, N, -1)
@@ -298,7 +368,7 @@ class GETPretrain(nn.Module):
         # atac = F.softplus(self.head_atac(x.permute(0, 2, 1)).permute(0, 2, 1).squeeze(-1))
         atac = None
         
-        return x_masked, atac, x_original
+        return x_masked, atac_sum, x_original
 
     def reset_head(self, output_dim, global_pool=""):
         self.output_dim = output_dim

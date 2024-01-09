@@ -40,10 +40,14 @@ pretrain = PretrainDataset(['/pmglocal/xf2217/get_data/shendure_fetal_dense.zarr
                            max_peak_length=5000, center_expand_target=500, n_peaks_lower_bound=5, n_peaks_upper_bound=200)
 pretrain.__len__()
 #%%
-pretrain.__len__
+pretrain.preload_data_packs = [0]
+pretrain.reload_data(0)
+#%%
+pretrain.preload_data_packs[0].insulation_peak_counts
 #%%
 for i in range(1000):
     a = pretrain.__getitem__(0)
+
 # %%
 #check maximum peak length
 peak_len = []
@@ -65,8 +69,8 @@ data_loader_train = torch.utils.data.DataLoader(
 
 # %%
 for i, batch in tqdm(enumerate(data_loader_train)):
-    sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, chunk_size, mask, n_peaks, max_n_peaks, total_peak_len, motif_mean_std = batch
-    if min(chunk_size)<0:
+    sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, peak_split, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_insertion, conv_sizes, motif_mean_std = batch
+    if min(peak_split)<0:
         continue
     # if max_n_peaks>200:
     if i > 2:
@@ -83,19 +87,19 @@ sample_track.shape
 # %%
 from get_model.model.model import GETPretrain  
 from get_model.utils import load_state_dict
+#%%
 import torch.nn as nn
 loss_masked = nn.MSELoss()
 model = GETPretrain(
         num_regions=200,
         num_res_block=0,
-        motif_prior=False,
+        motif_prior=True,
         embed_dim=768,
         num_layers=12,
         d_model=768,
         flash_attn=True,
         nhead=12,
         dropout=0.1,
-        output_dim=1274,
         pos_emb_components=[],
     )
 #%%
@@ -119,16 +123,16 @@ with torch.amp.autocast('cuda', dtype=torch.bfloat16):
     for i, batch in tqdm(enumerate(data_loader_train)):
         if i > 500:
             break
-        sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, chunk_size, mask, n_peaks, max_n_peaks, total_peak_len, motif_mean_std = batch
-        if min(chunk_size)<0:
+        sample_track, sample_peak_sequence, sample_metadata, celltype_peaks, sample_track_boundary, sample_peak_sequence_boundary, peak_split, mask, n_peaks, max_n_peaks, total_peak_len, sample_total_insertion, conv_sizes, motif_mean_std = batch
+        if min(peak_split)<0:
             continue
     # for i in tqdm(range(100)):
         bool_mask_pos = mask.clone()
         bool_mask_pos[bool_mask_pos == -10000] = 0
         sample_peak_sequence = sample_peak_sequence.bfloat16().cuda()
         sample_track = sample_track.bfloat16().cuda()
-        output_masked, _, target = model.forward(sample_peak_sequence, sample_track, bool_mask_pos.bool().cuda(), chunk_size, n_peaks.cuda(), max_n_peaks, motif_mean_std.cuda())
-        normlize_target = True
+        output_masked, _, target = model.forward(sample_peak_sequence, sample_track, bool_mask_pos.bool().cuda(), peak_split, n_peaks.cuda(), max_n_peaks, sample_total_insertion.cuda(), motif_mean_std.cuda())
+        normlize_target = False
         with torch.no_grad():
             unnorm_targets = target
             if normlize_target:

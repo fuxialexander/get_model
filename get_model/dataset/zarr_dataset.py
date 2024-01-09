@@ -45,7 +45,6 @@ class MotifMeanStd(object):
         self.zarr = zarr.open(zarr_path, mode='r')
         self.chromosomes = [basename(path) for path in glob.glob(os.path.join(zarr_path, 'mean_std/*'))]
         self.data_dict = {chromosome: self.zarr['mean_std/'+chromosome][:] for chromosome in self.chromosomes}
-
 class ZarrDataPool(object):
     """A class to handle data loading for a slot."""
     def __init__(self, zarr_dirs, genome_seq_zarr, insulation_paths, peak_name='peaks',insulation_subsample_ratio=0.1,
