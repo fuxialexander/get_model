@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO,
 # Suppress all deprecated warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-sys.path.append('/manitou/pmg/users/xf2217/get_model')
+sys.path.append('/pmglocal/xf2217/get_model')
 
 def get_padding_pos(mask):
     mask_ = mask.clone()

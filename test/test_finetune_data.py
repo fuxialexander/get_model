@@ -1,3 +1,4 @@
+#%%
 import numpy as np
 import seaborn as sns
 import torch
@@ -6,9 +7,9 @@ from tqdm import tqdm
 import wandb
 import torch.nn as nn
 import matplotlib.pyplot as plt
-
+from get_model.model.model import GETFinetune
 from get_model.dataset.collate import get_rev_collate_fn
-from get_model.dataset.zarr_dataset import PretrainDataset, ZarrDataPool, PreloadDataPack, CelltypeDenseZarrIO
+from get_model.dataset.zarr_dataset import PretrainDataset, ZarrDataPool, PreloadDataPack, CelltypeDenseZarrIO, worker_init_fn_get
 
 # # %%
 # cdz = CelltypeDenseZarrIO('/pmglocal/xf2217/get_data/shendure_fetal_dense.zarr')
@@ -18,21 +19,21 @@ from get_model.dataset.zarr_dataset import PretrainDataset, ZarrDataPool, Preloa
 # cdz = cdz.leave_out_celltypes_with_pattern('Astrocyte')
 
 
-wandb.login()
-run = wandb.init(
-    project="get",
-    name="finetune-gbm",
-)
-
-pretrain = PretrainDataset(['/pmglocal/alb2281/geo_data/htan_final/gbm/htan_gbm_dense.zarr',
+# wandb.login()
+# run = wandb.init(
+#     project="get",
+#     name="finetune-gbm",
+# )
+#%%
+pretrain = PretrainDataset(['/pmglocal/xf2217/get_data/shendure_fetal_dense.zarr',
                             ],
-                           '/pmglocal/alb2281/fetal_adult_data/hg38.zarr', 
-                           '/pmglocal/alb2281/fetal_adult_data/hg38_motif_result.zarr', [
-                           '/manitou/pmg/users/xf2217/get_model/data/hg38_4DN_average_insulation.ctcf.adjecent.feather', '/manitou/pmg/users/xf2217/get_model/data/hg38_4DN_average_insulation.ctcf.longrange.feather'], peak_name='peaks_q0.01_tissue_open_exp', preload_count=200, n_packs=1,
-                           max_peak_length=5000, center_expand_target=1000, n_peaks_lower_bound=50, n_peaks_upper_bound=100, leave_out_celltypes='Astrocyte', leave_out_chromosomes='chr11', is_train=False, additional_peak_columns=['Expression_positive', 'Expression_negative'], non_redundant='depth_2048', use_insulation=False, dataset_size=4096)
+                           '/pmglocal/xf2217/get_data/hg38.zarr', 
+                           '/pmglocal/xf2217/get_data/hg38_motif_result.zarr', [
+                           '/pmglocal/xf2217/get_model/data/hg38_4DN_average_insulation.ctcf.adjecent.feather', '/pmglocal/xf2217/get_model/data/hg38_4DN_average_insulation.ctcf.longrange.feather'], peak_name='peaks_q0.01_tissue_open_exp', preload_count=200, n_packs=1,
+                           max_peak_length=5000, center_expand_target=1000, n_peaks_lower_bound=50, n_peaks_upper_bound=100, leave_out_celltypes='Astrocyte', leave_out_chromosomes='chr11', is_train=False, additional_peak_columns=['Expression_positive', 'Expression_negative'], non_redundant='max_depth', use_insulation=False, dataset_size=4096)
 pretrain.__len__()
 
-
+#%%
 data_loader_train = torch.utils.data.DataLoader(
     pretrain,
     batch_size=8,
@@ -63,7 +64,7 @@ model = GETFinetune(
         final_bn = True,
     )
 #%%
-checkpoint = torch.load('/burg/home/xf2217/checkpoint.pth')
+checkpoint = torch.load('/pmglocal/xf2217/get_data/checkpoint-175.pth')
 #%%
 model.load_state_dict(checkpoint["model"], strict=True)
 
