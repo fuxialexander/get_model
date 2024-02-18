@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import torch
 import zarr
 from scipy.sparse import coo_matrix, load_npz, vstack
