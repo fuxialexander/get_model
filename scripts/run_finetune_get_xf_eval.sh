@@ -8,10 +8,9 @@ PORT=7957
 export NCCL_P2P_LEVEL=NVL
 
 # batch_size can be adjusted according to the graphics card
-OMP_NUM_THREADS=1 torchrun --nproc_per_node=1 --rdzv-endpoint=localhost:$PORT get_model/finetune.py \
+OMP_NUM_THREADS=1 torchrun --nproc_per_node=2 --rdzv-endpoint=localhost:$PORT get_model/finetune.py \
     --data_set "Expression_Finetune_Fetal" \
     --eval_data_set "Expression_Finetune_Fetal.fetal_eval" \
-    --finetune "/pmglocal/xf2217/get_data/checkpoint-best.pth" \
     --data_path ${DATA_PATH} \
     --input_dim 639 \
     --output_dim 2 \
@@ -21,8 +20,8 @@ OMP_NUM_THREADS=1 torchrun --nproc_per_node=1 --rdzv-endpoint=localhost:$PORT ge
     --batch_size 16 \
     --num_workers 32 \
     --n_peaks_lower_bound 20 \
-    --n_peaks_upper_bound 500 \
-    --center_expand_target 200 \
+    --n_peaks_upper_bound 200 \
+    --center_expand_target 500 \
     --non_redundant 'max_depth' \
     --preload_count 200 \
     --pin_mem \
@@ -35,6 +34,7 @@ OMP_NUM_THREADS=1 torchrun --nproc_per_node=1 --rdzv-endpoint=localhost:$PORT ge
     --eval_freq 5 \
     --freeze_atac_attention \
     --dist_eval \
+    --eval \
     --eval_tss \
     --leave_out_celltypes "Astrocyte" \
     --leave_out_chromosomes "chr1" \
