@@ -9,9 +9,10 @@ from timm.models.registry import register_model
 # from rotary_embedding_torch import RotaryEmbedding
 from get_model.model.position_encoding import CTCFPositionalEncoding, AbsolutePositionalEncoding
 from get_model.model.motif import parse_meme_file
-from get_model.model.transformer import GETTransformer
+from get_model.model.transformer import GETTransformer, TransformerLayer
 from get_model.model.pooling import SplitPool, ATACSplitPool, ATACSplitPoolMaxNorm
-
+from get_model.dataset.zarr_dataset import Alphabet
+from esm.modules import RobertaLMHead
 import torch
 from torch.nn import Linear
 
@@ -181,6 +182,136 @@ class TFEncoder(nn.Module):
     pass
 
 
+class ATACBERT(nn.Module):
+    # BERT model that takes ATAC peak density as input
+    # trained as masked language model
+    def __init__(self, 
+                 num_layers: int = 32,
+                 embed_dim: int = 512,
+                 attention_heads: int = 16,
+                 token_dropout: bool = True):
+        super().__init__()
+        self.num_layers = num_layers
+        self.embed_dim = embed_dim
+        self.attention_heads = attention_heads
+        self.alphabet = Alphabet(
+            standard_toks = ['A', 'C', 'G', 'T'],
+            prepend_toks = ("<cls>", "<pad>", "<eos>", "<unk>"),
+            append_toks = ("<mask>",),
+            prepend_bos = True,
+            append_eos = True,
+        )
+        self.alphabet_size = len(self.alphabet)
+        self.padding_idx = self.alphabet.padding_idx
+        self.mask_idx = self.alphabet.mask_idx
+        self.cls_idx = self.alphabet.cls_idx
+        self.eos_idx = self.alphabet.eos_idx
+        self.prepend_bos = self.alphabet.prepend_bos
+        self.append_eos = self.alphabet.append_eos
+        self.token_dropout = token_dropout
+
+        self._init_submodules()
+
+    def _init_submodules(self):
+        self.embed_scale = 1
+        self.embed_tokens = nn.Embedding(
+            self.alphabet_size,
+            self.embed_dim,
+            padding_idx=self.padding_idx,
+        )
+        # add a layer to concatenate the embed_tokens with the peak_density
+        self.peak_density_layer = nn.Linear(self.embed_dim + 1, self.embed_dim)
+        self.peak_density_layernorm = nn.LayerNorm(self.embed_dim)
+        self.peak_density_activation = nn.ReLU()
+
+        self.layers = nn.ModuleList(
+            [
+                TransformerLayer(
+                    self.embed_dim,
+                    4 * self.embed_dim,
+                    self.attention_heads,
+                    add_bias_kv=False,
+                    use_rotary_embeddings=True,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+
+        self.emb_layer_norm_after = nn.LayerNorm(self.embed_dim)
+
+        self.lm_head = RobertaLMHead(
+            embed_dim=self.embed_dim,
+            output_dim=self.alphabet_size,
+            weight=self.embed_tokens.weight,
+        )
+
+    def forward(self, tokens, peak_density, repr_layers=[], need_head_weights=False):
+        assert tokens.ndim == 2
+        padding_mask = tokens.eq(self.padding_idx)  # B, T
+
+        x = self.embed_scale * self.embed_tokens(tokens)
+
+        if self.token_dropout:
+            x.masked_fill_((tokens == self.mask_idx).unsqueeze(-1), 0.0)
+            # x: B x T x C
+            mask_ratio_train = 0.15 * 0.8
+            src_lengths = (~padding_mask).sum(-1)
+            mask_ratio_observed = (tokens == self.mask_idx).sum(-1).to(x.dtype) / src_lengths
+            x = x * (1 - mask_ratio_train) / (1 - mask_ratio_observed)[:, None, None]
+
+        if padding_mask is not None:
+            x = x * (1 - padding_mask.unsqueeze(-1).type_as(x))
+
+        repr_layers = set(repr_layers)
+        hidden_representations = {}
+        if 0 in repr_layers:
+            hidden_representations[0] = x
+
+        if need_head_weights:
+            attn_weights = []
+
+        # encode peak density into x
+        x = self.peak_density_layer(torch.cat([x, peak_density.unsqueeze(-1)], dim=-1))
+        x = self.peak_density_layernorm(x)
+        x = self.peak_density_activation(x)
+        
+        # (B, T, E) => (T, B, E)
+        x = x.transpose(0, 1)
+
+        if not padding_mask.any():
+            padding_mask = None
+
+        for layer_idx, layer in enumerate(self.layers):
+            x, attn = layer(
+                x,
+                self_attn_padding_mask=padding_mask,
+                need_head_weights=need_head_weights,
+            )
+            if (layer_idx + 1) in repr_layers:
+                hidden_representations[layer_idx + 1] = x.transpose(0, 1)
+            if need_head_weights:
+                # (H, B, T, T) => (B, H, T, T)
+                attn_weights.append(attn.transpose(1, 0))
+
+        x = self.emb_layer_norm_after(x)
+        x = x.transpose(0, 1)  # (T, B, E) => (B, T, E)
+
+        # last hidden representation should have layer norm applied
+        if (layer_idx + 1) in repr_layers:
+            hidden_representations[layer_idx + 1] = x
+        x = self.lm_head(x)
+
+        result = {"logits": x, "representations": hidden_representations}
+        if need_head_weights:
+            # attentions: B x L x H x T x T
+            attentions = torch.stack(attn_weights, 1)
+            if padding_mask is not None:
+                attention_mask = 1 - padding_mask.type_as(attentions)
+                attention_mask = attention_mask.unsqueeze(1) * attention_mask.unsqueeze(2)
+                attentions = attentions * attention_mask[:, None, None, :, :]
+            result["attentions"] = attentions
+
+        return result
 
 
 class MotifScanner(nn.Module):

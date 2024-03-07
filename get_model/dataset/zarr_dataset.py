@@ -13,6 +13,8 @@ from pyranges import PyRanges as pr
 from scipy.sparse import csr_matrix, vstack
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from typing import List, Sequence
+import itertools
 
 
 logging.basicConfig(level=logging.INFO,
@@ -1136,6 +1138,192 @@ class PretrainDataset(Dataset):
         self.preload_data_packs=[0]
         self.reload_data(0)
         return self._getitem(index)
+
+
+class Alphabet(object):
+    def __init__(
+        self,
+        standard_toks: Sequence[str],
+        prepend_toks: Sequence[str] = ("<null_0>", "<pad>", "<eos>", "<unk>"),
+        append_toks: Sequence[str] = ("<cls>", "<mask>", "<sep>"),
+        prepend_bos: bool = True,
+        append_eos: bool = False,
+    ):
+        self.standard_toks = list(standard_toks)
+        self.prepend_toks = list(prepend_toks)
+        self.append_toks = list(append_toks)
+        self.prepend_bos = prepend_bos
+        self.append_eos = append_eos
+        # revert the order of prepend_toks, in esm it was prepend_toks, standard_toks, append_toks
+        self.all_toks = list(self.standard_toks)
+        self.all_toks.extend(self.prepend_toks)
+        for i in range((8 - (len(self.all_toks) % 8)) % 8):
+            self.all_toks.append(f"<null_{i  + 1}>")
+        self.all_toks.extend(self.append_toks)
+
+        self.tok_to_idx = {tok: i for i, tok in enumerate(self.all_toks)}
+
+        self.unk_idx = self.tok_to_idx["<unk>"]
+        self.padding_idx = self.get_idx("<pad>")
+        self.cls_idx = self.get_idx("<cls>")
+        self.mask_idx = self.get_idx("<mask>")
+        self.eos_idx = self.get_idx("<eos>")
+        self.all_special_tokens = ['<eos>', '<unk>', '<pad>', '<cls>', '<mask>']
+        self.unique_no_split_tokens = self.all_toks
+
+    def __len__(self):
+        return len(self.all_toks)
+
+    def get_idx(self, tok):
+        return self.tok_to_idx.get(tok, self.unk_idx)
+
+    def get_tok(self, ind):
+        return self.all_toks[ind]
+
+    def to_dict(self):
+        return self.tok_to_idx.copy()
+
+    def get_batch_converter(self, truncation_seq_length: int = None):
+        # return BatchConverter(self, truncation_seq_length)
+        return None
+
+    def _tokenize(self, text) -> str:
+        return text.split()
+
+    def tokenize(self, text, **kwargs) -> List[str]:
+        """
+        Inspired by https://github.com/huggingface/transformers/blob/master/src/transformers/tokenization_utils.py
+        Converts a string in a sequence of tokens, using the tokenizer.
+
+        Args:
+            text (:obj:`str`):
+                The sequence to be encoded.
+
+        Returns:
+            :obj:`List[str]`: The list of tokens.
+        """
+
+        def split_on_token(tok, text):
+            result = []
+            split_text = text.split(tok)
+            for i, sub_text in enumerate(split_text):
+                # AddedToken can control whitespace stripping around them.
+                # We use them for GPT2 and Roberta to have different behavior depending on the special token
+                # Cf. https://github.com/huggingface/transformers/pull/2778
+                # and https://github.com/huggingface/transformers/issues/3788
+                # We strip left and right by default
+                if i < len(split_text) - 1:
+                    sub_text = sub_text.rstrip()
+                if i > 0:
+                    sub_text = sub_text.lstrip()
+
+                if i == 0 and not sub_text:
+                    result.append(tok)
+                elif i == len(split_text) - 1:
+                    if sub_text:
+                        result.append(sub_text)
+                    else:
+                        pass
+                else:
+                    if sub_text:
+                        result.append(sub_text)
+                    result.append(tok)
+            return result
+
+        def split_on_tokens(tok_list, text):
+            if not text.strip():
+                return []
+
+            tokenized_text = []
+            text_list = [text]
+            for tok in tok_list:
+                tokenized_text = []
+                for sub_text in text_list:
+                    if sub_text not in self.unique_no_split_tokens:
+                        tokenized_text.extend(split_on_token(tok, sub_text))
+                    else:
+                        tokenized_text.append(sub_text)
+                text_list = tokenized_text
+
+            return list(
+                itertools.chain.from_iterable(
+                    (
+                        self._tokenize(token)
+                        if token not in self.unique_no_split_tokens
+                        else [token]
+                        for token in tokenized_text
+                    )
+                )
+            )
+
+        no_split_token = self.unique_no_split_tokens
+        tokenized_text = split_on_tokens(no_split_token, text)
+        return tokenized_text
+
+    def encode(self, text):
+        return [self.tok_to_idx[tok] for tok in self.tokenize(text)]
+
+
+class ATACBERTDataset(PretrainDataset):
+    def __init__(
+        self, zarr_dirs, genome_seq_zarr, genome_motif_zarr, insulation_paths, peak_name='peaks', additional_peak_columns=None, preload_count=50, padding=50, mask_ratio=0.5, n_packs=2, max_peak_length=None, center_expand_target=None, insulation_subsample_ratio=0.1, n_peaks_lower_bound=1, n_peaks_upper_bound=1, use_insulation=True, sequence_obj=None, leave_out_celltypes=None, leave_out_chromosomes=None, n_peaks_sample_gap=50, is_train=True, non_redundant=False, filter_by_min_depth=False, dataset_size=655_360, peak_inactivation=None, mut=None, invert_peak=None, random_shift_peak=True, hic_path=None, alphabet: Alphabet = None
+    ):
+        super().__init__(zarr_dirs=zarr_dirs, genome_seq_zarr=genome_seq_zarr, genome_motif_zarr=genome_motif_zarr, insulation_paths=insulation_paths, peak_name=peak_name, additional_peak_columns=additional_peak_columns, preload_count=preload_count, padding=padding, mask_ratio=mask_ratio, n_packs=n_packs, max_peak_length=max_peak_length, center_expand_target=center_expand_target, insulation_subsample_ratio=insulation_subsample_ratio, n_peaks_lower_bound=n_peaks_lower_bound, n_peaks_upper_bound=n_peaks_upper_bound, use_insulation=use_insulation, sequence_obj=sequence_obj, leave_out_celltypes=leave_out_celltypes, leave_out_chromosomes=leave_out_chromosomes, n_peaks_sample_gap=n_peaks_sample_gap, is_train=is_train, non_redundant=non_redundant, filter_by_min_depth=filter_by_min_depth, dataset_size=dataset_size, peak_inactivation=peak_inactivation, mut=mut, invert_peak=invert_peak, random_shift_peak=random_shift_peak, hic_path=hic_path)
+        """
+        ATAC BERT Dataset, directly inherit from PretrainDataset
+        Has its own __getitem method, and an alphabet attribute
+        """
+        if alphabet is None:
+            self.alphabet = Alphabet(
+                standard_toks = ['A', 'C', 'G', 'T'],
+                prepend_toks = ("<cls>", "<pad>", "<eos>", "<unk>"),
+                append_toks = ("<mask>",),
+                prepend_bos = True,
+                append_eos = True,
+            )
+        else:
+            self.alphabet = alphabet
+        
+    def _getitem(self, index: int):
+        """
+        Load item from current preload data pack, after
+        the current pack is used up, switch to the next avaliable pack and reload the current pack
+        """
+        sample = self.preload_data_packs[self.current_pack].get_next_sample()
+
+        if sample is None:
+            # remove the current pack from avaliable packs
+            self.avaliable_packs.remove(self.current_pack)
+            #  reload the current pack
+            self.reload_data(self.current_pack)
+            # switch to the next avaliable pack
+            self.current_pack = (self.current_pack+1) % self.n_packs
+            return self._getitem(index)
+        else:
+            # only output:
+            # sample[0]: peak density
+            # sample[1]: peak sequence
+            # sample[2]: metadata
+            # sample[3]: start and end of the peaks
+            # first process peak sequence
+            seq_density = sample[0][sample[3][0][0]:sample[3][0][1]]
+            seq = sample[1][sample[3][0][0]:sample[3][0][1]]
+            seq = np.asarray(np.argmax(seq, axis=1).reshape(1, -1)).squeeze(0)
+            # next mask the sequence, except for the start and end tokens
+            mask_idx = np.random.choice([0, 1], size=seq.shape, p=[1 - self.mask_ratio, self.mask_ratio])
+            # add mask to seq_int
+            seq_int = seq * (1 - mask_idx) + self.alphabet.mask_idx * mask_idx
+            # add start and end tokens of the peak to the sequence
+            seq_int = np.concatenate([np.array([self.alphabet.cls_idx]), seq_int, np.array([self.alphabet.eos_idx])], axis=0)
+            # mask_idx = np.concatenate([np.array([0]), mask_idx, np.array([0])], axis=0)
+            seq_density = np.concatenate([np.array([0]), seq_density.toarray().reshape(1, -1).squeeze(0), np.array([0])], axis=0)
+            # normalize seq_density based on library size
+            seq_density = seq_density / sample[2]['libsize'] * 1e8
+            # change seq_density dtype to float32
+            seq_density = seq_density.astype(np.float32)
+            # change mask_idx dtype to bool
+            mask_idx = mask_idx.astype(np.bool)
+            return seq_int, seq_density, seq, mask_idx
 
 
 def worker_init_fn_get(worker_id):
