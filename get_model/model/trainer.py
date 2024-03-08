@@ -10,7 +10,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Subset
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, RandomSampler
 from torch import _dynamo, Tensor
 from get_model.dataset.zarr_dataset import ATACBERTDataset
 from get_model.dataset.zarr_dataset import worker_init_fn_get
@@ -67,7 +67,11 @@ class ATACBERTTrainer(object):
                  log_dir="logs/", # log dir
                  ):
         # create a random sampler
-        sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
+        if world_size is not None:
+            # use distributed sampler
+            sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
+        else:
+            sampler = RandomSampler(data)
         # initialize the data loader
         # TODO: add validation data loader
         self.val_dataset = None
