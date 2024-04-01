@@ -1,0 +1,1828 @@
+# simplified GET model
+import os
+from typing import Optional
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from timm.models.layers import trunc_normal_
+from timm.models.registry import register_model
+import numpy as np
+# from rotary_embedding_torch import RotaryEmbedding
+from get_model.model.position_encoding import CTCFPositionalEncoding, AbsolutePositionalEncoding
+from get_model.model.motif import parse_meme_file
+from get_model.model.transformer import GETTransformer
+from get_model.model.pooling import SplitPool, ATACSplitPool, ATACSplitPoolMaxNorm, ConvPool
+from get_model.model.vae_networks import PositionalNorm, ResBlock, VAEEncoder, VAEDecoder
+
+import torch
+from torch.nn import Linear
+
+class OuterProductMean(nn.Module):
+    """
+    Implements a simplified version of the OuterProductMean.
+    """
+
+    def __init__(self, c_m, c_z, c_hidden, eps=1e-3):
+        """
+        Args:
+            c_m: MSA embedding channel dimension
+            c_z: Pair embedding channel dimension
+            c_hidden: Hidden channel dimension
+        """
+        super(OuterProductMean, self).__init__()
+
+        self.eps = eps
+        self.layer_norm = nn.LayerNorm(c_m)
+        self.linear_1 = Linear(c_m, c_hidden)
+        self.linear_2 = Linear(c_m, c_hidden)
+        self.linear_out = Linear(c_hidden ** 2, c_z, init="final")
+
+    def forward(self, m: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            m: [*, N_seq, N_res, C_m] MSA embedding
+            mask: [*, N_seq, N_res] MSA mask, if None, create a mask of ones
+        Returns:
+            [*, N_res, N_res, C_z] pair embedding update
+        """
+        if mask is None:
+            mask = m.new_ones(m.shape[:-1])
+
+        ln = self.layer_norm(m)
+        mask = mask.unsqueeze(-1)
+        a = self.linear_1(ln) * mask
+        b = self.linear_2(ln) * mask
+        a = a.transpose(-2, -3)
+        b = b.transpose(-2, -3)
+
+        # Calculate the outer product mean
+        outer = torch.einsum("...bac,...dae->...bdce", a, b)
+        outer = outer.reshape(outer.shape[:-2] + (-1,))
+        outer = self.linear_out(outer)
+
+        norm = torch.einsum("...abc,...adc->...bdc", mask, mask) + self.eps
+        outer = outer / norm
+
+        return outer
+
+class SequenceEncoder(nn.Module):
+    """A sequence encoder based on Conv1D.
+    Input: one-hot encoding of DNA sequences of all regions in batch (BATCH_SIZE, NUM_REGION, SEQ_LEN, 4)
+    Output: embedding of batch (BATCH_SIZE, NUM_REGION, EMBED_DIM)
+    Architecture:
+    Conv1D(4, 32, 3, padding='valid', activation='relu')
+    """
+
+    def __init__(
+        self, num_region, num_motif=637, num_res_block=3, motif_prior=False
+    ):
+        super().__init__()
+        self.num_region = num_region
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        if motif_prior:
+            motifs = self.load_pwm_as_kernel()
+            self.motif = nn.Sequential(
+                nn.Conv1d(4, num_motif, 29, padding="same"),
+                nn.BatchNorm1d(num_motif),
+                nn.ReLU(),
+            )
+            assert (
+                motifs.shape == self.motif[0].weight.shape
+            ), f"Motif prior shape ({motifs.shape}) doesn't match model ({self.motif[0].weight.shape})."
+            self.motif[0].weight.data = motifs.cuda()
+            self.motif[0].weight.requires_grad = False
+
+        else:
+            self.motif = nn.Sequential(
+                nn.Conv1d(4, num_motif, 29, padding="same"),
+                nn.BatchNorm1d(num_motif),
+                nn.ReLU(),
+            )
+        if num_res_block > 0:
+            self.res_blocks = self.get_residue_block()
+
+    def load_pwm_as_kernel(
+        self,
+        pwm_path="https://resources.altius.org/~jvierstra/projects/motif-clustering-v2.1beta/consensus_pwms.meme",
+    ):
+        # download pwm to local
+        if not os.path.exists("consensus_pwms.meme"):
+            os.system(f"wget {pwm_path}")
+        # load pwm
+        motifs = parse_meme_file("consensus_pwms.meme")
+        return torch.tensor(motifs).permute(0, 2, 1).float()
+
+    def get_residue_block(self):
+        res_blocks = []
+        for i in range(self.num_res_block):
+            res_blocks.append(
+                nn.Sequential(
+                    nn.Conv1d(
+                        self.num_motif,
+                        self.num_motif,
+                        3,
+                        padding="same",
+                        dilation=2**i,
+                    ),
+                    nn.BatchNorm1d(self.num_motif),
+                    nn.ReLU(),
+                )
+            )
+        return nn.ModuleList(res_blocks)
+
+    def forward(self, x):
+        B, N, L, _ = x.shape
+        x = x.reshape(B * N, L, 4).permute(
+            0, 2, 1
+        )  # (BATCH_SIZE * NUM_REGION, 4, SEQ_LEN)
+        x = self.motif(x)
+        # residue block
+        if hasattr(self, "res_blocks"):
+            for res_block in self.res_blocks:
+                x = x + res_block(x)
+        # global average pooling across DNA sequence
+        x_mean = x.mean(dim=2)  # (BATCH_SIZE * NUM_REGION, NUM_MOTIF)
+        x_mean = x_mean.reshape(-1, self.num_region, self.num_motif)
+        return x_mean
+
+    # make sure cuda is used
+    def cuda(self, device=None):
+        self.motif = self.motif.cuda()
+        if hasattr(self, "res_blocks"):
+            self.res_blocks = self.res_blocks.cuda()
+        return self._apply(lambda t: t.cuda(device))
+
+
+class RegionEmbed(nn.Module):
+    """A simple region embedding transforming motif features to region embeddings.
+    Using Conv1D to enforce Linear transformation region-wise.
+    """
+
+    def __init__(self, num_regions, num_features, embed_dim):
+        super().__init__()
+        self.num_region = num_regions
+        self.num_features = num_features
+        self.embed_dim = embed_dim
+        self.embed = nn.Linear(num_features, embed_dim)
+
+    def forward(self, x, **kwargs):
+        # x = x.permute(0, 2, 1)  # (BATCH_SIZE, NUM_MOTIF, NUM_REGION)
+        x = self.embed(x)
+        # x = x.permute(0, 2, 1)  # (BATCH_SIZE, NUM_REGION, EMBED_DIM)
+        return x
+
+class TFEncoder(nn.Module):
+    """This module is used to encode TF protein information. More specifically,
+    each TF among L TFs is represented by a N-by-D matrix (as input), where N is 1 or 2 or N, 
+    when N is 1, the vector is directly from ESM CLS token embedding
+    when N is 2, the two vectors are from DBD CLS and non-DBD CLS token embedding
+    when N is N, the vectors are from pLDDT-segmented CLS token embedding
+    the output of this module is a L by D matrix which captures the TF relationship.
+    """
+    pass
+
+
+
+
+class MotifScanner(nn.Module):
+    """A motif encoder based on Conv1D.
+    Input: one-hot encoding of DNA sequences of all regions in batch (BATCH_SIZE, NUM_REGION, SEQ_LEN, 4)
+    Output: embedding of batch (BATCH_SIZE, NUM_REGION, EMBED_DIM)
+    Architecture:
+    Conv1D(4, 32, 3, padding='valid', activation='relu')
+    """
+
+    def __init__(
+        self, num_motif=637, include_reverse_complement=True, bidirectional_except_ctcf=False, learnable=False):
+        super().__init__()
+        self.num_motif = num_motif
+        self.bidirectional_except_ctcf = bidirectional_except_ctcf
+        self.learnable = learnable
+        if include_reverse_complement and self.bidirectional_except_ctcf:
+            self.num_motif *= 2
+        elif include_reverse_complement:
+            self.num_motif *= 2
+
+        motifs = self.load_pwm_as_kernel(include_reverse_complement=include_reverse_complement)
+        self.motif = nn.Sequential(
+            nn.Conv1d(4, self.num_motif, 29, padding="same", bias=False),
+            # nn.BatchNorm1d(num_motif),
+            nn.ReLU(),
+        )
+        assert (
+            motifs.shape == self.motif[0].weight.shape
+        ), f"Motif prior shape ({motifs.shape}) doesn't match model ({self.motif[0].weight.shape})."
+        self.motif[0].weight.data = motifs
+        if not self.learnable:
+            self.motif[0].weight.requires_grad = False
+
+    def load_pwm_as_kernel(
+        self,
+        pwm_path="https://resources.altius.org/~jvierstra/projects/motif-clustering-v2.1beta/consensus_pwms.meme",
+        include_reverse_complement=True,
+    ):
+        # download pwm to local
+        if not os.path.exists("consensus_pwms.meme"):
+            os.system(f"wget {pwm_path}")
+        # load pwm
+        motifs = parse_meme_file("consensus_pwms.meme")
+        motifs_rev = motifs[:, ::-1, ::-1].copy()
+        # construct reverse complement
+        motifs = torch.tensor(motifs)
+        motifs_rev = torch.tensor(motifs_rev)
+        motifs = torch.cat([motifs, motifs_rev], dim=0)
+        return motifs.permute(0, 2, 1).float()
+
+    def forward(self, x):
+        # [B, 200, 1000, 4] --> [B, 200, 1000, 1274]
+        B, L, _ = x.shape
+        x = x.permute(0, 2, 1)                # (B * N, 4, L)
+        x = self.motif(x)
+        if self.bidirectional_except_ctcf:
+            # get ctcf scanned score for both motif and reverse complement motif. idx of ctcf is 77 and 637+77=714
+            ctcf = x[:, 77, :]
+            ctcf_rev = x[:, 714, :]
+            # combine motif and reverse complement motif for all motifs
+            x = x[:, :637, :] + x[:, 637:, :]
+            # add ctcf/ctcf_rev score to the end
+            x = torch.cat([x, ctcf.unsqueeze(1), ctcf_rev.unsqueeze(1)], dim=1)
+        x = x.permute(0, 2, 1)#.reshape(B, L, self.num_motif)     # (B, N, L, 1274)
+
+        return x
+
+    # make sure cuda is used
+    def cuda(self, device=None):
+        self.motif = self.motif.cuda()
+        return self._apply(lambda t: t.cuda(device))
+
+class ATACAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, peak_seq, atac):
+        return peak_seq * atac.unsqueeze(-1)
+        # return torch.einsum("bld,blc->blcd", peak_seq, atac).sum(dim=2)
+    
+
+class GETPretrainMaxNorm(nn.Module):
+    """A GET model for pretraining using mask and prediction."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        atac_attention=True,
+        flash_attn=False,
+        atac_kernel_num=16,
+        atac_kernel_size=3,
+        joint_kernel_num=16,
+        joint_kernel_size=3,
+        final_bn=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ATACSplitPoolMaxNorm(pool_method='mean',
+                                            atac_kernel_num=atac_kernel_num,
+                                            motif_dim=motif_dim,
+                                            joint_kernel_num=joint_kernel_num,
+                                            atac_kernel_size=atac_kernel_size,
+                                            joint_kernel_size=joint_kernel_size,
+                                            final_bn=final_bn,
+                                            atac_input_norm=True
+                                            )
+        self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim+joint_kernel_num, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        # self.head_atac = nn.Conv1d(d_model, 1, 1)
+        self.head_mask = nn.Linear(d_model, output_dim)
+
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+        """forward function with hooks to return embedding or attention weights."""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        # update running max
+        # up to this point, x is the motif scanning result and no learning is involved
+        x_region = self.split_pool(x, chunk_size, n_peaks, max_n_peaks)
+
+        x_original = self.atac_attention(x, x_region, atac, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+
+        x = self.region_embed(x_original)
+        B, N, C = x_original.shape
+        mask_token = self.mask_token.expand(B, N, -1)
+        w = mask.unsqueeze(-1).type_as(mask_token)
+        x = x * (1 - w) + mask_token * w
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        x, _ = self.encoder(x, mask=padding_mask) # (N, D)
+        x_masked = self.head_mask(x) # (N, Motif)
+        # x_masked = x_masked[mask].reshape(B, -1, C)
+        # atac = F.softplus(self.head_atac(x.permute(0, 2, 1)).permute(0, 2, 1).squeeze(-1))
+        atac = None
+        
+        return x_masked, atac, x_original
+
+    def reset_head(self, output_dim, global_pool=""):
+        self.output_dim = output_dim
+        self.head = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+
+class GETPretrain(nn.Module):
+    """A GET model for pretraining using mask and prediction."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        atac_attention=True,
+        flash_attn=False,
+        atac_kernel_num=16,
+        atac_kernel_size=3,
+        joint_kernel_num=16,
+        joint_kernel_size=3,
+        final_bn=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ATACSplitPool(pool_method='mean',
+                                            atac_kernel_num=atac_kernel_num,
+                                            motif_dim=motif_dim,
+                                            joint_kernel_num=joint_kernel_num,
+                                            atac_kernel_size=atac_kernel_size,
+                                            joint_kernel_size=joint_kernel_size,
+                                            final_bn=final_bn,
+                                            atac_input_norm=True
+                                            )
+        # self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim+joint_kernel_num, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        # self.head_atac = nn.Conv1d(d_model, 1, 1)
+        self.head_mask = nn.Linear(d_model, output_dim)
+
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+        """forward function with hooks to return embedding or attention weights."""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        x_original = self.atac_attention(x, atac, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+        # x_original = self.split_pool(x, chunk_size, n_peaks, max_n_peaks)
+
+        x = self.region_embed(x_original)
+        B, N, C = x_original.shape
+        mask_token = self.mask_token.expand(B, N, -1)
+        w = mask.unsqueeze(-1).type_as(mask_token)
+        x = x * (1 - w) + mask_token * w
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        x, _ = self.encoder(x, mask=padding_mask) # (N, D)
+        x_masked = self.head_mask(x) # (N, Motif)
+        # x_masked = x_masked[mask].reshape(B, -1, C)
+        # atac = F.softplus(self.head_atac(x.permute(0, 2, 1)).permute(0, 2, 1).squeeze(-1))
+        atac = None
+        
+        return x_masked, atac, x_original
+
+    def reset_head(self, output_dim, global_pool=""):
+        self.output_dim = output_dim
+        self.head = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+class ExpressionHead(nn.Module):
+    """Expression head"""
+
+    def __init__(self, embed_dim, output_dim, use_atac=False):
+        super().__init__()
+        self.use_atac = use_atac
+        if use_atac:
+            self.head = nn.Linear(embed_dim + 1, output_dim)
+        else:
+            self.head = nn.Linear(embed_dim, output_dim)
+
+    def forward(self, x, atac=None):
+        if self.use_atac:
+            x = torch.cat([x, atac], dim=-1)
+        return self.head(x)
+
+class ATACHead(nn.Module):
+    """ATAC head"""
+
+    def __init__(self, embed_dim, hidden_dim, output_dim, drop=0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(embed_dim, hidden_dim)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.drop1 = nn.Dropout(drop)
+        self.drop2 = nn.Dropout(drop)
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop1(x)
+        x = self.fc2(x)
+        x = self.drop2(x)
+        return x
+
+class motif2seqScanner(nn.Module):
+    """
+    A motif decoder based on Conv1D to transform motif embeddings to sequence representations. [BATCH_SIZE, SEQ_LEN, MOTIF] -> [BATCH_SIZE, SEQ_LEN, 4]
+    """
+    def __init__(self, motif_dim, hidden_dim, output_dim=4):
+        super(motif2seqScanner, self).__init__()
+
+        # Ensure that padding is set to maintain SEQ_LEN consistency across transformations
+        self.conv1 = nn.Conv1d(motif_dim, hidden_dim, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(hidden_dim, output_dim, kernel_size=3, padding=1)
+
+    def forward(self, x):
+        # x shape: (BATCH_SIZE, SEQ_LEN, MOTIF_DIM), but Conv1d expects (BATCH_SIZE, MOTIF_DIM, SEQ_LEN)
+        x = x.transpose(1, 2)  # Transpose to fit Conv1d input requirements
+
+        # Apply first Conv1d to get to hidden dimension
+        x = F.relu(self.conv1(x))
+
+        # Apply second Conv1d to get to output dimension (4)
+        x = self.conv2(x)  # No activation here, assuming the next step involves a softmax or similar
+
+        # Revert to (BATCH_SIZE, SEQ_LEN, 4) for consistency with expected output
+        x = x.transpose(1, 2)
+        return x
+
+
+class GETFinetune(nn.Module):
+    """A GET model for finetuning using classification head."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        atac_attention=True,
+        flash_attn=False,
+        atac_kernel_num=16,
+        atac_kernel_size=3,
+        joint_kernel_num=16,
+        joint_kernel_size=3,
+        use_atac=False,
+        final_bn=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ATACSplitPool(
+            pool_method='mean',
+            atac_kernel_num=atac_kernel_num,
+            motif_dim=motif_dim,
+            joint_kernel_num=joint_kernel_num,
+            atac_kernel_size=atac_kernel_size,
+            joint_kernel_size=joint_kernel_size,
+            final_bn=final_bn,
+        )
+        # self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim+joint_kernel_num, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        # self.head_atac = nn.Conv1d(d_model, 1, 1)
+        # self.head_mask = nn.Linear(d_model, output_dim)
+        self.head_exp = (
+            ExpressionHead(d_model, output_dim, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        # self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, other_labels):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        x_original = self.atac_attention(x, atac, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+        # x_original = self.split_pool(x, chunk_size, n_peaks, max_n_peaks)
+
+        x = self.region_embed(x_original)
+        B, N, C = x_original.shape
+
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        tss_mask = None # TODO: Set tss_mask to None for now
+        x, _ = self.encoder(x, mask=padding_mask)
+        # atac = F.softplus(self.head_atac(x.permute(0, 2, 1))).permute(0, 2, 1).squeeze(-1)
+        atac = None
+
+        exp = F.softplus(self.head_exp(x, atac))
+        return atac, exp, None
+
+    def reset_head(self, output_dim):
+        self.output_dim = output_dim
+        self.head_exp = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+class GETFinetuneExpATAC(nn.Module):
+    """A GET model for finetuning using classification head."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        atac_attention=True,
+        flash_attn=False,
+        atac_kernel_num=16,
+        atac_kernel_size=3,
+        joint_kernel_num=16,
+        joint_kernel_size=3,
+        use_atac=False,
+        final_bn=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ATACSplitPool(
+            pool_method='mean',
+            atac_kernel_num=atac_kernel_num,
+            motif_dim=motif_dim,
+            joint_kernel_num=joint_kernel_num,
+            atac_kernel_size=atac_kernel_size,
+            joint_kernel_size=joint_kernel_size,
+            final_bn=final_bn,
+        )
+        # self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim+joint_kernel_num, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        self.head_atac = ATACHead(motif_dim+joint_kernel_num, d_model, 1)
+        # self.head_mask = nn.Linear(d_model, output_dim)
+        self.head_exp = (
+            ExpressionHead(d_model, output_dim, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        self.head_confidence = (
+            ExpressionHead(d_model, 50, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        # self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, other_labels):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        
+        x_original = self.atac_attention(x, atac, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+        # x_original = self.split_pool(x         , chunk_size, n_peaks, max_n_peaks)
+        tss_mask = other_labels[:,:, 1]
+        # x_original = torch.cat([x_original, atpm], dim=-1)
+        atpm = F.softplus(self.head_atac(x_original))
+        x = self.region_embed(x_original)
+
+        B, N, C = x_original.shape
+
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        x, _ = self.encoder(x, mask=padding_mask)
+        exp = F.softplus(self.head_exp(x, None))
+        confidence = F.softplus(self.head_confidence(x, None))
+        return atpm, exp, confidence
+
+    def reset_head(self, output_dim):
+        self.output_dim = output_dim
+        self.head_exp = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+        self.head_atac = ATACHead(self.embed_dim, self.d_model, 1)
+        self.head_confidence = ExpressionHead(self.embed_dim, 50, False)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+class GETFinetuneATAC(nn.Module):
+    """A GET model for finetuning using classification head."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        atac_attention=True,
+        flash_attn=False,
+        atac_kernel_num=16,
+        atac_kernel_size=3,
+        joint_kernel_num=16,
+        joint_kernel_size=3,
+        use_atac=True,
+        final_bn=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ATACSplitPool(
+            pool_method='mean',
+            atac_kernel_num=atac_kernel_num,
+            motif_dim=motif_dim,
+            joint_kernel_num=joint_kernel_num,
+            atac_kernel_size=atac_kernel_size,
+            joint_kernel_size=joint_kernel_size,
+            final_bn=final_bn,
+        )
+        # self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim+joint_kernel_num, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        self.head_atac = ATACHead(d_model, 1)
+        # self.head_mask = nn.Linear(d_model, output_dim)
+        self.head_exp = (
+            ExpressionHead(d_model, output_dim, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        # self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        x_original = self.atac_attention(x, atac, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+        # x_original = self.split_pool(x, chunk_size, n_peaks, max_n_peaks)
+
+        x = self.region_embed(x_original)
+        B, N, C = x_original.shape
+
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        tss_mask = None # TODO: Set tss_mask to None for now
+        x, _ = self.encoder(x, mask=padding_mask)
+        atac = F.softplus(self.head_atac(x.permute(0, 2, 1))).permute(0, 2, 1).squeeze(-1)
+
+        exp = F.softplus(self.head_exp(x, atac))
+        return atac, exp, None
+
+    def reset_head(self, output_dim):
+        self.output_dim = output_dim
+        self.head_exp = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+
+class GETFinetuneExpATACFromSequence(nn.Module):
+    """A GET model for finetuning using classification head."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        flash_attn=False,
+        use_atac=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.motif_dim = motif_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = SplitPool(
+            pool_method='mean',
+        )
+        # self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        self.head_atac = ATACHead(motif_dim, d_model, 1)
+        # self.head_mask = nn.Linear(d_model, output_dim)
+        self.head_exp = (
+            ExpressionHead(d_model, output_dim, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        self.head_confidence = (
+            ExpressionHead(d_model, 50, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        # self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, other_labels):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        x_original = self.atac_attention(x, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+        atpm = F.softplus(self.head_atac(x_original))
+
+        # x_original = self.split_pool(x         , chunk_size, n_peaks, max_n_peaks)
+        tss_mask = other_labels[:,:, 1]
+        # x_original = torch.cat([x_original, atpm], dim=-1)
+        
+        x = self.region_embed(x_original)
+
+        B, N, C = x_original.shape
+
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        x, _ = self.encoder(x, mask=padding_mask)
+        exp = F.softplus(self.head_exp(x, None))
+        confidence = F.softplus(self.head_confidence(x, None))
+        return atpm, exp, confidence
+
+    def reset_head(self, output_dim):
+        self.output_dim = output_dim
+        self.head_exp = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+        self.head_atac = ATACHead(self.motif_dim, self.d_model, 1)
+        self.head_confidence = ExpressionHead(self.embed_dim, 50, False)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+
+
+class GETFinetuneExpATACWithHiC(nn.Module):
+    """A GET model for finetuning using classification head."""
+
+    def __init__(
+        self,
+        num_regions=200,
+        num_motif=637,
+        motif_dim=639,
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=1,
+        pos_emb_components=["CTCF", "Rotary", "Absolute"],
+        atac_attention=True,
+        flash_attn=False,
+        atac_kernel_num=16,
+        atac_kernel_size=3,
+        joint_kernel_num=16,
+        joint_kernel_size=3,
+        use_atac=False,
+        final_bn=False,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.num_res_block = num_res_block
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.pos_emb_components = pos_emb_components
+        self.atac_kernel_num = atac_kernel_num
+        self.atac_kernel_size = atac_kernel_size
+        self.joint_kernel_num = joint_kernel_num
+        self.joint_kernel_size = joint_kernel_size
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ATACSplitPool(
+            pool_method='mean',
+            atac_kernel_num=atac_kernel_num,
+            motif_dim=motif_dim,
+            joint_kernel_num=joint_kernel_num,
+            atac_kernel_size=atac_kernel_size,
+            joint_kernel_size=joint_kernel_size,
+            final_bn=final_bn,
+            binary_atac=True,
+        )
+        # self.split_pool = SplitPool()
+        self.region_embed = RegionEmbed(num_regions, motif_dim+joint_kernel_num, embed_dim)
+        self.pos_embed = []
+        if "CTCF" in self.pos_emb_components: 
+            self.pos_embed.append(CTCFPositionalEncoding(embed_dim))
+        # if "Rotary" in self.pos_emb_components:
+            # self.pos_embed.append(RotaryEmbedding(embed_dim))
+        if "Absolute" in self.pos_emb_components:
+            self.pos_embed.append(AbsolutePositionalEncoding(embed_dim))
+        self.pos_embed = nn.ModuleList(self.pos_embed)
+        self.encoder = GETTransformer(
+            d_model,
+            nhead,
+            num_layers,
+            drop_path_rate=dropout,
+            drop_rate=dropout,
+            attn_drop_rate=dropout,
+            use_mean_pooling=False,
+            flash_attn=flash_attn,
+        )
+        self.head_atac = ATACHead(motif_dim+joint_kernel_num, d_model, 1)
+        # self.head_mask = nn.Linear(d_model, output_dim)
+        self.head_exp = (
+            ExpressionHead(d_model, output_dim, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        self.head_confidence = (
+            ExpressionHead(d_model, 50, use_atac)
+            if output_dim > 0
+            else nn.Identity()
+        )
+        # self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # trunc_normal_(self.mask_token, std=0.02)
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, other_labels, hic_matrix):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        # [B, L, 1274] --> [B, R, 1274]
+        # gloabl pooling inner product with peak
+        
+        x_original = self.atac_attention(x, atac, chunk_size, n_peaks, max_n_peaks)
+        # x = self.atac_attention(x, atac)
+        # x_original = self.split_pool(x         , chunk_size, n_peaks, max_n_peaks)
+        tss_mask = other_labels[:,:, 1]
+        # x_original = torch.cat([x_original, atpm], dim=-1)
+        atpm = F.softplus(self.head_atac(x_original))
+        x = self.region_embed(x_original)
+
+        B, N, C = x_original.shape
+
+
+        for pos_emb_component in self.pos_embed:
+            if isinstance(pos_emb_component, CTCFPositionalEncoding):
+                x = pos_emb_component(x, ctcf_pos)
+            else:
+                x = pos_emb_component(x)
+
+        x, _ = self.encoder(x, mask=padding_mask, bias=hic_matrix)
+        exp = F.softplus(self.head_exp(x, None))
+        confidence = F.softplus(self.head_confidence(x, None))
+        return atpm, exp, confidence
+
+    def reset_head(self, output_dim):
+        self.output_dim = output_dim
+        self.head_exp = (
+            nn.Linear(self.embed_dim, output_dim) if output_dim > 0 else nn.Identity()
+        )
+        self.head_atac = ATACHead(self.embed_dim, self.d_model, 1)
+        self.head_confidence = ExpressionHead(self.embed_dim, 50, False)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+class GETFinetuneChrombpNet(nn.Module):
+    """A GET model for finetuning using classification head."""
+
+    def __init__(
+        self,
+        num_motif=637,
+        motif_dim=639,
+        embed_dim=768,
+        num_regions=200,
+        motif_prior=True,
+        num_layers=7,
+        d_model=768,
+        nhead=1,
+        dropout=0.1,
+        output_dim=1,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.atac_attention = ConvPool(
+            pool_method='mean',
+            n_dil_layers=self.num_layers,
+            motif_dim=motif_dim,
+            hidden_dim=embed_dim//2
+        )
+        self.apply(self._init_weights)
+
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, other_labels, hic_matrix):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 1274]
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        print(f"Input data shape is: {x.shape}")
+        atpm, aprofile = self.atac_attention(x, chunk_size, n_peaks, max_n_peaks)
+        print(f"atpm shape is {atpm.shape}, aprofile shape is {aprofile.shape}")
+        return atpm, aprofile
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+
+class GETFinetuneAuto(nn.Module):
+    """A GET model for finetuning using autoencoder."""
+    """Goal: [B,L,4] -> [B,L,M], then learning Latent from [B,L,M] and recover back to [B,L,4] (M stands for motif class)
+        Architecture: Conv1D motif scanner + VAE + Conv1D motif to sequence decoder"""
+
+    def __init__(
+        self,
+        num_motif=637,
+        motif_dim=639,
+        embed_dim=768,
+        num_regions=200,
+        motif_prior=True,
+        num_layers=7,
+        d_model=768,
+        nhead=1,
+        dropout=0.3,
+        output_dim=1,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.apply(self._init_weights)
+        self.seq_len = 1024
+
+        self.mu_encoder = nn.Sequential(
+            # Projection from [B, 1, 256, 1024] -> [B, 64, 4, 16]
+            nn.Conv2d(1, 2, kernel_size=(2, 2), stride=2, padding = 1),  # Output: [B, 2, 128, 512]
+            nn.BatchNorm1d(2),
+            nn.ReLU(),
+            nn.Conv2d(2, 4, kernel_size=(2, 2), stride=2, padding = 2, dilation = 2),  # Output: [B, 4, 64, 256]
+            nn.BatchNorm1d(4),
+            nn.ReLU(),
+            nn.Conv2d(4, 8, kernel_size=(2, 2), stride=2, padding = 4, dilation = 4),  # Output: [B, 8, 32, 128]
+            nn.BatchNorm1d(8),
+            nn.ReLU(),
+            nn.Conv2d(8, 16, kernel_size=(2, 2), stride=2, padding = 8, dilation = 8),  # Output: [B, 16, 16, 64]
+            nn.BatchNorm1d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=(2, 2), stride=2, padding = 16, dilation = 16),  # Output: [B, 32, 8, 32]
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=(2, 2), stride=1, padding = 32, dilation = 32),  # Output: [B, 64, 4, 16]
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+        )
+
+        self.logvar_encoder = nn.Sequential(
+            # Projection from [B, 1, 256, 1024] -> [B, 64, 4, 16]
+            nn.Conv2d(1, 2, kernel_size=(2, 2), stride=2),  # Output: [B, 2, 128, 512]
+            nn.ReLU(),
+            nn.Conv2d(2, 4, kernel_size=(2, 2), stride=2),  # Output: [B, 4, 64, 256]
+            nn.ReLU(),
+            nn.Conv2d(4, 8, kernel_size=(2, 2), stride=2),  # Output: [B, 8, 32, 128]
+            nn.ReLU(),
+            nn.Conv2d(8, 16, kernel_size=(2, 2), stride=2),  # Output: [B, 16, 16, 64]
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=(2, 2), stride=2),  # Output: [B, 32, 8, 32]
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=(2, 2), stride=2),  # Output: [B, 64, 4, 16]
+            nn.ReLU(),
+        )
+
+        self.decoder = nn.Sequential(
+            # [B, 64, 4, 16] -> [B, 1, 256, 1024]
+            nn.ConvTranspose2d(64, 32, kernel_size=(2, 2), stride=2),  # Output: [B, 32, 8, 32]
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 16, kernel_size=(2, 2), stride=2),  # Output: [B, 16, 16, 64]
+            nn.ReLU(),
+            nn.ConvTranspose2d(16, 8, kernel_size=(2, 2), stride=2),  # Output: [B, 8, 32, 128]
+            nn.ReLU(),
+            nn.ConvTranspose2d(8, 4, kernel_size=(2, 2), stride=2),  # Output: [B, 4, 64, 256]
+            nn.ReLU(),
+            nn.ConvTranspose2d(4, 2, kernel_size=(2, 2), stride=2),  # Output: [B, 2, 128, 512]
+            nn.ReLU(),
+            nn.ConvTranspose2d(2, 1, kernel_size=(2, 2), stride=2),  # Output: [B, 1, 256, 1024]
+            nn.ReLU()
+        )
+
+        self.motif_proj = nn.Conv1d(motif_dim, 256, 1, bias=True)
+        self.motif_proj_back = nn.Conv1d(in_channels=256, out_channels=639, kernel_size=1,bias=True)
+        self.motifdecoder = motif2seqScanner(motif_dim, motif_dim//2, 4)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+    
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, other_labels, hic_matrix, train_motif_only = False):
+        """labels_data is (B, R, C), C=2 for expression. R=max_n_peaks"""
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 639]
+        #print(f"peak size: f{peak_seq.shape}")
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x)
+        motif_emb = x
+        B, L, _ = x.shape
+        self.seq_len = L
+        #print(f"Input motif embedding shape is: {x.shape}")
+
+        x = x.transpose(1, 2)  # Reshape for Conv1d: (B, L, M) to (B, M, L)
+        x = self.motif_proj(x)
+        x = x.unsqueeze(1)  # Add channel dimension: [B, 1, 256, 1024]
+
+        mu = self.mu_encoder(x)
+        logvar = self.logvar_encoder(x)
+        latent_x = self.reparameterize(mu, logvar)
+        #print(f"mu size: {mu.shape}")
+        #print(f"logvar size: {logvar.shape}")
+        #print(f"latent size: {latent_x.shape}")
+        reformed_x = self.decoder(latent_x) # Decoder [B, 64, 4, 16] -> [B, 1, 256, 1024]]
+        reformed_x = reformed_x.squeeze(1)  # [16, 1, 256, 1024] -> [16, 256, 1024]
+
+        #latent_x = self.encoder(x) # Encoder [B, 1, 256, 1024]] -> [B, 64, 4, 16]
+        mu = self.mu_encoder(x)
+        logvar = self.logvar_encoder(x)
+        latent_x = self.reparameterize(mu, logvar)
+        #print(f"mu size: {mu.shape}")
+        #print(f"logvar size: {logvar.shape}")
+        #print(f"latent size: {latent_x.shape}")
+        reformed_x = self.decoder(latent_x) # Decoder [B, 64, 4, 16] -> [B, 1, 256, 1024]]
+        reformed_x = reformed_x.squeeze(1)  # [16, 1, 256, 1024] -> [16, 256, 1024]
+        reformed_x = self.motif_proj_back(reformed_x) #[16, 256, 1024] -> [16, 639, 1024]
+        #print(f"reconstructed data size: {reformed_x.transpose(1,2).shape}")
+        if train_motif_only == True:
+            return motif_emb, reformed_x.transpose(1,2), latent_x, mu, logvar
+        else:
+            output_x = self.motifdecoder(reformed_x.transpose(1,2)) # [16, 639, 1024] -> [16, 1024, 4]
+            #print(f"output size: {output_x.shape}")
+            if (output_x.shape != peak_seq.shape):
+                print("Warning! input_peak_seq shape needs to equal to output_seq shape!")
+            return peak_seq, output_x, motif_emb, reformed_x.transpose(1,2), latent_x, mu, logvar
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+
+class Motif_VAE(nn.Module):
+    """Variational Autoencoder as described in https://arxiv.org/abs/1312.6114
+
+    The variational autoencoder models the latent space with an underlying
+    standard Gaussian distribution. The data space is also modelled using a
+    normal distribution with mean and variance generated by the decoder network.
+    """
+    def __init__(
+        self,
+        num_motif=637,
+        motif_dim=639,
+        embed_dim=768,
+        num_regions=200,
+        motif_prior=True,
+        num_layers=7,
+        d_model=768,
+        nhead=1,
+        dropout=0.3,
+        output_dim=1,
+    ):
+        super().__init__()
+        self.num_regions = num_regions
+        self.num_motif = num_motif
+        self.motif_prior = motif_prior
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.nhead = nhead
+        self.dropout = dropout
+        self.output_dim = output_dim
+        self.motif_scanner = MotifScanner(
+            num_motif=num_motif, include_reverse_complement=True,
+            bidirectional_except_ctcf=True
+        )
+        self.apply(self._init_weights)
+        self.motif_proj = nn.Conv1d(motif_dim, 256, 1, bias=True)
+        self.motif_proj_back = nn.Conv1d(in_channels=256, out_channels=639, kernel_size=1,bias=True)
+        self.motifdecoder = motif2seqScanner(motif_dim, motif_dim//2, 4)
+
+        #self.latent_dim = 16
+        self.encoder = VAEEncoder(1, 16)            #(channel, latent_dim)
+        self.decoder = VAEDecoder(1, 16, (256,20,20))
+
+        # We will use a standard Gaussian distribution for the prior by default.
+        # Note that if we decide to use a different prior distribution, then we
+        # need to revisit the formula for the reparametrization.
+        #
+        # Instead of storing the prior distribution as a parameter of the model,
+        # we will construct it on every `self.prior()` call. The reason for this
+        # is that once the Distribution object is initialized it cannot be moved
+        # to a different device. Using this workaround the prior is defined on
+        # the device on which the model parameters are currently placed.
+        self.register_buffer("mu_prior", torch.tensor(0.))
+        self.register_buffer("std_prior", torch.tensor(1.))
+
+    def prior(self):
+        return torch.distributions.Normal(self.mu_prior, self.std_prior)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+    
+    def forward(self, peak_seq, atac, mask, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std, kl_regularizer, other_labels, hic_matrix):
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 639] Here is [B, L, 4] -> [B, L, 639]
+        ### Scanning motifs and reshape
+        x = self.motif_scanner(peak_seq)
+        x = x - motif_mean_std[:,0, :].unsqueeze(1)
+        x = x / motif_mean_std[:,1, :].unsqueeze(1)
+        x = F.relu(x) # [B, L, 639]
+        x = F.pad(x, (0, 1), "constant", 0) # [B, L, 640] add a padding layer of 0 at last dimension
+        input_x = x # [B, L, 640]
+        x = x.transpose(1, 2).unsqueeze(1)  # [B, L, 640] -> [B, 640, L] -> [B, 1, 640, L]
+        
+        ### Decode and encode
+        mu_z, log_std_z = self.encoder(x) # z represents latent space
+        eps = self.prior().sample(mu_z.shape)
+        z = mu_z + log_std_z.exp() * eps
+        mu_x, log_std_x = self.decoder(z) # [B,hidden_dim]
+
+        # Since we are parametrizing the distributions returned by the encoder
+        # and the decoder using normal distributions, we can calculate the
+        # reconstruction loss and the KL loss using closed form formulas.
+        # NOTE: Observe that the reconstruction loss is actually proportional to
+        # MSE loss scaled by the std.
+        recon_loss = 0.5 * (np.log(2 * np.pi) + log_std_x + (x-mu_x) ** 2 / log_std_x.exp())
+        recon_loss = recon_loss.mean(dim=0).sum()
+        kl_loss = 0.5 * (-log_std_z - 1 + (mu_z ** 2 + log_std_z.exp()))
+        kl_loss = kl_loss.mean(dim=0).sum()
+
+        # We can also compute the reconstruction and the KL losses for any type
+        # of distributions that we choose using the pytorch built in functions.
+        # NOTE: It would probably be a lot faster to use the formulas above for
+        # the reconstruction and KL losses, instead of creating the distributions
+        # calling the `log_prob` and `kl_divergence` built-ins.
+        #q_dist = torch.distributions.Normal(mu_z, log_std_z.exp())
+        #p_dist = torch.distributions.Normal(mu_x, log_std_x.exp())
+        #recon_loss = -p_dist.log_prob(x).mean(dim=0).sum()
+        #kl_loss = torch.distributions.kl.kl_divergence(q_dist, self.prior()).mean(dim=0).sum()
+
+        _, C, H, W = x.shape
+        recon_loss /= (C * H * W)
+        kl_loss /= (C * H * W)
+        total_loss = recon_loss + kl_regularizer * kl_loss
+
+        recon_x = mu_x.squeeze(1) #[B, 1, 640, L] -> [B, 640, L]
+        recon_x = recon_x.transpose(1,2) #[B, 640, L] -> [B, L, 640]
+        # Reconstruct motif embedding and sequence embedding 
+        return input_x, recon_x.cpu(), z.cpu(), mu_z.cpu(), log_std_z.cpu(), total_loss, recon_loss, kl_loss
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+@register_model
+def get_pretrain_motif_base(pretrained=False, **kwargs):
+    model = GETPretrain(
+        num_regions=kwargs["num_region_per_sample"],
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=kwargs["output_dim"],
+        pos_emb_components=[],
+        flash_attn=kwargs["flash_attn"],
+        atac_kernel_num=161,
+        joint_kernel_num=161,
+        final_bn=kwargs["final_bn"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_pretrain_motif_base_maxnorm(pretrained=False, **kwargs):
+    model = GETPretrainMaxNorm(
+        num_regions=kwargs["num_region_per_sample"],
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=kwargs["output_dim"],
+        pos_emb_components=[],
+        flash_attn=kwargs["flash_attn"],
+        atac_kernel_num=161,
+        joint_kernel_num=161,
+        final_bn=kwargs["final_bn"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_finetune_motif(pretrained=False, **kwargs):
+    model = GETFinetune(
+        num_regions=kwargs["num_region_per_sample"],
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=kwargs["output_dim"],
+        pos_emb_components=[],
+        flash_attn=kwargs["flash_attn"],
+        atac_kernel_num=161,
+        joint_kernel_num=161,
+        final_bn=kwargs["final_bn"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_finetune_motif_with_atac(pretrained=False, **kwargs):
+    model = GETFinetuneExpATAC(
+        num_regions=kwargs["num_region_per_sample"],
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=kwargs["output_dim"],
+        pos_emb_components=[],
+        flash_attn=kwargs["flash_attn"],
+        atac_kernel_num=161,
+        joint_kernel_num=161,
+        final_bn=kwargs["final_bn"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_finetune_motif_with_atac_from_sequence(pretrained=False, **kwargs):
+    model = GETFinetuneExpATACFromSequence(
+        num_regions=kwargs["num_region_per_sample"],
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=kwargs["output_dim"],
+        pos_emb_components=[],
+        flash_attn=kwargs["flash_attn"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_finetune_motif_with_atac_hic(pretrained=False, **kwargs):
+    model = GETFinetuneExpATACWithHiC(
+        num_regions=kwargs["num_region_per_sample"],
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        num_res_block=0,
+        motif_prior=False,
+        embed_dim=768,
+        num_layers=12,
+        d_model=768,
+        nhead=12,
+        dropout=0.1,
+        output_dim=kwargs["output_dim"],
+        pos_emb_components=[],
+        flash_attn=kwargs["flash_attn"],
+        atac_kernel_num=161,
+        joint_kernel_num=161,
+        final_bn=kwargs["final_bn"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_finetune_motif_chrombpnet(pretrained=False, **kwargs):
+    model = GETFinetuneChrombpNet(
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+        embed_dim=768,
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+@register_model
+def get_finetune_motif_autoencoder(pretrained=False, **kwargs):
+    model = GETFinetuneAuto(
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+
+@register_model
+def get_finetune_motif_vae(pretrained=False, **kwargs):
+    model = Motif_VAE(
+        num_motif=kwargs["num_motif"],
+        motif_dim=kwargs["motif_dim"],
+    )
+    if pretrained:
+        checkpoint = torch.load(kwargs["init_ckpt"], map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    return model
