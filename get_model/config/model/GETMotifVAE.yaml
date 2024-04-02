@@ -1,0 +1,42 @@
+model:
+  _target_: get_model.model.model_refactored.GETMotifVAE
+  cfg:
+    motif_scanner:
+      num_motif: 637
+      include_reverse_complement: true
+      bidirectional_except_ctcf: true
+      motif_prior: true
+      learnable: false
+    loss:
+      components:
+        reconstruction_value: 
+          _target_: torch.nn.MSELoss
+          reduction: 'mean'
+        KL_value:
+          _target_: torch.nn.MSELoss
+          reduction: 'mean'
+      weights: 
+        reconstruction_value: 1.0
+        KL_value: 1.0
+    metrics:
+      components:
+        reconstruction_data: ['mse', 'pearson', 'spearman', 'r2']
+    with_bias: false
+    #bias_model:
+    #  _target_: get_model.model.model_refactored.GETChrombpNetBias
+    #  cfg:
+    #    motif_scanner:
+    #      num_motif: 637
+    #      include_reverse_complement: true
+    #      bidirectional_except_ctcf: true
+    #      motif_prior: true
+    #      learnable: false
+    #    atac_attention:
+    #      pool_method: mean
+    #      motif_dim: 639
+    #      hidden_dim: 256
+    #      n_dil_layers: 7
+    #      profile_kernel_size: 75
+    #    loss: ${model.cfg.loss}
+    #    metrics: ${model.cfg.metrics}
+    #bias_ckpt: null

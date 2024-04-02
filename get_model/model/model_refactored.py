@@ -18,6 +18,7 @@ from get_model.model.modules import (ATACSplitPool, ATACSplitPoolConfig,
                                      RegionEmbed, RegionEmbedConfig, SplitPool,
                                      SplitPoolConfig, dict_to_device)
 from get_model.model.transformer import GETTransformer
+from get_model.model.GETMotifVAE_models import PositionalNorm, ResBlock, VAEEncoder, VAEDecoder
 
 
 @dataclass
@@ -64,10 +65,29 @@ class GETLoss(nn.Module):
 
     def forward(self, pred, obs):
         """Compute the loss"""
+        """This version enable passing losses calculated within and returned by the model"""
         if isinstance(self.losses, dict):
-            return {f"{name}_loss": loss_fn(pred[name], obs[name]) * weight for name, (loss_fn, weight) in self.losses.items()}
+            print("Loss function is recognized")
+            result = {}
+            for name, (loss_fn, weight) in self.losses.items():
+                if '_value' in name:
+                    print("Loss function is running correctly")
+                    new_name = name.replace('_value', '') + '_loss'
+                    result[new_name] = self.pred[name]
+                else:
+                    print("Loss error 1")
+                    result[f"{name}_loss"] = loss_fn(pred[name], obs[name]) * weight
+            return result
         elif isinstance(self.losses, nn.Module):
+            print("Loss error 2")
             return self.losses(pred, obs)
+    
+    #def forward(self, pred, obs):
+    #    """Compute the loss"""
+    #    if isinstance(self.losses, dict):
+    #        return {f"{name}_loss": loss_fn(pred[name], obs[name]) * weight for name, (loss_fn, weight) in self.losses.items()}
+    #    elif isinstance(self.losses, nn.Module):
+    #        return self.losses(pred, obs)
 
 
 class RegressionMetrics(nn.Module):
@@ -471,3 +491,87 @@ class GETChrombpNet(GETChrombpNetBias):
                 bias_aprofile, (crop_length, diff_length - crop_length), "constant", 0)
             aprofile = aprofile + bias_aprofile
         return {'atpm': atpm, 'aprofile': aprofile}
+
+
+@dataclass
+class GETMotifVAEConfig(BaseGETModelConfig):
+    num_motif: int = 637
+    motif_scanner: MotifScannerConfig = field(
+        default_factory=MotifScannerConfig)
+
+class GETMotifVAE(BaseGETModel):
+    """A GET model trained to predict latent space of an input DNA sequence, 
+    then reconstruct the motif space. Overal: Sequence => Motif => Latent => Motif"""
+    def __init__(self, cfg: GETMotifVAEConfig):
+        super().__init__(cfg)
+        self.encoder = VAEEncoder(1, 16)            #(channel, latent_dim)
+        self.decoder = VAEDecoder(1, 16, (256,20,20))
+        self.motif_scanner = MotifScanner(cfg.motif_scanner)
+        self.register_buffer("mu_prior", torch.tensor(0.))
+        self.register_buffer("std_prior", torch.tensor(1.))
+    
+    def prior(self):
+        return torch.distributions.Normal(self.mu_prior, self.std_prior)
+
+    def get_input(self, batch):
+        return {
+            'sample_peak_sequence': batch['sample_peak_sequence'],
+        }
+    
+    def forward(self, sample_peak_sequence):
+        # peak_seq: [B, L, 4]
+        # [B, L, 4] --> [B, L, 639] Here is [B, L, 4] -> [B, L, 639]
+        ### Scanning motifs and reshape
+        x = self.motif_scanner(sample_peak_sequence) # Sequence -> Motif
+        x = F.pad(x, (0, 1), "constant", 0) # [B, L, 640] add a padding layer of 0 at last dimension
+        input_x = x # [B, L, 640]
+        x = x.transpose(1, 2).unsqueeze(1)  # [B, L, 640] -> [B, 640, L] -> [B, 1, 640, L]
+
+        ### Decode and encode
+        mu_z, log_std_z = self.encoder(x) # z represents latent space
+        eps = self.prior().sample(mu_z.shape)
+        z = mu_z + log_std_z.exp() * eps
+        mu_x, log_std_x = self.decoder(z) # [B,hidden_dim]
+
+        # Since we are parametrizing the distributions returned by the encoder
+        # and the decoder using normal distributions, we can calculate the
+        # reconstruction loss and the KL loss using closed form formulas.
+        # NOTE: Observe that the reconstruction loss is actually proportional to
+        # MSE loss scaled by the std.
+        #recon_loss = 0.5 * (np.log(2 * np.pi) + log_std_x + (x-mu_x) ** 2 / log_std_x.exp())
+        #recon_loss = recon_loss.mean(dim=0).sum()
+        #kl_loss = 0.5 * (-log_std_z - 1 + (mu_z ** 2 + log_std_z.exp()))
+        #kl_loss = kl_loss.mean(dim=0).sum()
+
+        # We can also compute the reconstruction and the KL losses for any type
+        # of distributions that we choose using the pytorch built in functions.
+        # NOTE: It would probably be a lot faster to use the formulas above for
+        # the reconstruction and KL losses, instead of creating the distributions
+        # calling the `log_prob` and `kl_divergence` built-ins.
+        q_dist = torch.distributions.Normal(mu_z, log_std_z.exp())
+        p_dist = torch.distributions.Normal(mu_x, log_std_x.exp())
+        recon_loss = -p_dist.log_prob(x).mean(dim=0).sum()
+        kl_loss = torch.distributions.kl.kl_divergence(q_dist, self.prior()).mean(dim=0).sum()
+
+        _, C, H, W = x.shape
+        recon_loss /= (C * H * W)
+        kl_loss /= (C * H * W)
+        total_loss = recon_loss + kl_loss
+
+        recon_x = mu_x.squeeze(1) #[B, 1, 640, L] -> [B, 640, L]
+        recon_x = recon_x.transpose(1,2) #[B, 640, L] -> [B, L, 640]
+        # Reconstruct motif embedding and sequence embedding 
+
+        return {'input_x': input_x, 'recon_x': recon_x.cpu(), 'target_dist': self.prior(), 'pred_dist': q_dist,
+        'latent': z.cpu(), 'latent_mu': mu_z.cpu(), 'latent_logvar': log_std_z.cpu(),
+        'total_loss': total_loss, 'recon_loss': recon_loss, 'kl_loss': kl_loss}
+
+    def before_loss(self,output):
+        pred = {'reconstruction_data': output['recon_x'], 'reconstruction_value': output['recon_loss'], 'KL_value': output['kl_loss']}
+        obs = {'reconstruction_data': output['input_x'], 'reconstruction_value': output['recon_loss'], 'KL_value': output['kl_loss']}
+        return pred, obs
+
+    def generate_dummy_data(self):
+        return {
+            'sample_peak_sequence': torch.randint(low=0, high=10, size=(10, 640, 4)).float(),
+        }

@@ -420,7 +420,7 @@ def run(cfg: DictConfig):
     model.dm = dm
     trainer = L.Trainer(
         max_epochs=cfg.training.epochs,
-        accelerator="gpu",
+        accelerator="cpu",
         num_sanity_val_steps=10,
         strategy="auto",
         devices=cfg.machine.num_devices,
@@ -428,7 +428,7 @@ def run(cfg: DictConfig):
                             name=cfg.wandb.run_name)],
         callbacks=[ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1, save_last=True, filename="best"),
                    LearningRateMonitor(logging_interval='step')],
-        plugins=[MixedPrecision(precision='16-mixed', device="cuda")],
+        #plugins=[MixedPrecision(precision='16-mixed', device="cuda")],
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
         gradient_clip_val=cfg.training.clip_grad,
         log_every_n_steps=100,

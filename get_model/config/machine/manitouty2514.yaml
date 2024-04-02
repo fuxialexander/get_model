@@ -1,0 +1,6 @@
+data_path: "/pmglocal/ty2514/GET_STARTED/get_data/"
+codebase: "/pmglocal/ty2514/GET_STARTED/get_model/"
+output_dir: "/pmglocal/ty2514/"
+num_devices: 1
+num_workers: 32
+batch_size: 16
