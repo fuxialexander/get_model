@@ -459,7 +459,7 @@ def main(args, ds_init):
     np.random.seed(seed)
     # random.seed(seed)
 
-    sequence_obj = DenseZarrIO('/pmglocal/alb2281/get_data/get_resources/hg38.zarr', dtype='int8')
+    sequence_obj = DenseZarrIO('/pmglocal/alb2281/get/get_resources/hg38.zarr', dtype='int8')
     sequence_obj.load_to_memory_dense()
 
     cudnn.benchmark = True
@@ -739,10 +739,14 @@ def main(args, ds_init):
         max_pearsonr_score = test_stats["pearsonr_score"]
         max_spearmanr_score = test_stats["spearmanr_score"]
 
-        print(f"Statistics of the network on the {len(dataset_val)} test images")
+        print(f"Statistics of the network on the {len(dataset_val)} test examples")
         print(
             f"R2score: {max_r2score:.3f}, pearsonr_score: {max_pearsonr_score:.3f}, spearmanr_score: {max_spearmanr_score:.3f}"
         )
+
+        if utils.is_main_process():
+            log_stats = {**{f"test_{k}": v for k, v in test_stats.items()}}
+            wandb.log(log_stats)
         exit(0)
 
     # if args.vis_attn:

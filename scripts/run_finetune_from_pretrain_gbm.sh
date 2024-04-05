@@ -2,16 +2,16 @@
 # Set the path to save checkpoints
 OUTPUT_DIR='/pmglocal/alb2281/get_ckpts/output/finetune-from-pretrain'
 # path to expression set
-DATA_PATH='/pmglocal/alb2281/get_data/htan_data/zarr_final'
+DATA_PATH='/pmglocal/alb2281/get/get_data/'
 PORT=7965
 
 export NCCL_P2P_LEVEL=NVL
 
 # batch_size can be adjusted according to the graphics card
-CUDA_VISIBLE_DEVICES=2,3 OMP_NUM_THREADS=2 python -m torch.distributed.run --nproc_per_node=2 --rdzv-endpoint=localhost:$PORT /pmglocal/alb2281/repos/get_model/get_model/finetune.py \
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 python -m torch.distributed.run --nproc_per_node=1 --rdzv-endpoint=localhost:$PORT /pmglocal/alb2281/repos/get_model/get_model/finetune.py \
     --data_set "HTAN_GBM" \
     --eval_data_set "HTAN_GBM.eval" \
-    --finetune "/pmglocal/alb2281/get_ckpts/input/output_rev_pretrain_ATACSplitPool_unnorm_bidirectional_no_insulation_no_affine_no_final_bn.pth" \
+    --finetune "/pmglocal/alb2281/get/get_ckpts/pretrain/R200L500-with-atac-loss-GBM-leaveout-Tumor.htan_gbm.C3N-01814_CPT0167860015-chr11.pth" \
     --data_path ${DATA_PATH} \
     --input_dim 639 \
     --output_dim 2 \
@@ -28,8 +28,9 @@ CUDA_VISIBLE_DEVICES=2,3 OMP_NUM_THREADS=2 python -m torch.distributed.run --npr
     --lr 5e-4 \
     --opt adamw \
     --wandb_project_name "get-finetune-gbm" \
-    --wandb_run_name "gbm-finetune-from-pretrain_ATACSplitPool_unnorm_bidirectional_no_insulation_no_affine_no_final_bn-leaveout-oligo-chr11" \
+    --wandb_run_name "gbm-eval-interpret" \
     --eval_freq 1 \
+    --eval \
     --dist_eval \
     --eval_nonzero \
     --leave_out_celltypes "Oligodendrocytes" \
@@ -38,5 +39,5 @@ CUDA_VISIBLE_DEVICES=2,3 OMP_NUM_THREADS=2 python -m torch.distributed.run --npr
     --opt_betas 0.9 0.95 \
     --warmup_epochs 5 \
     --epochs 200 \
-    --num_region_per_sample 100 \
+    --num_region_per_sample 200 \
     --output_dir ${OUTPUT_DIR} 
