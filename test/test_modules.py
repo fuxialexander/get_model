@@ -28,3 +28,5 @@ def test_GETChrombpNetBias():
     _model_forward("GETChrombpNetBias")
 def test_GETChrombpNet():
     _model_forward("GETChrombpNet")
+def test_GETFinetuneATAC():
+    _model_forward("GETFinetuneATAC")    

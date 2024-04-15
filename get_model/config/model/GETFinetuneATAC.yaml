@@ -1,5 +1,5 @@
 model:
-  _target_: get_model.model.model_refactored.GETFinetune
+  _target_: get_model.model.model_refactored.GETFinetuneATAC
   cfg:
     num_regions: 10
     num_motif: 637
@@ -41,6 +41,8 @@ model:
     head_exp:
       embed_dim: ${model.cfg.embed_dim}
       output_dim: ${model.cfg.output_dim}
+      hidden_dim: 256
+      drop: 0.1
       use_atac: false
 
     mask_token:

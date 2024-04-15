@@ -13,7 +13,7 @@ from get_model.model.modules import (ATACSplitPool, ATACSplitPoolConfig,
                                      ATACSplitPoolMaxNorm,
                                      ATACSplitPoolMaxNormConfig, BaseConfig,
                                      BaseModule, ConvPool, ConvPoolConfig,
-                                     ExpressionHead, ExpressionHeadConfig,
+                                     ExpressionHead, ATACHead, ATACHeadConfig,ExpressionHeadConfig,
                                      MotifScanner, MotifScannerConfig,
                                      RegionEmbed, RegionEmbedConfig, SplitPool,
                                      SplitPoolConfig, dict_to_device)
@@ -383,6 +383,7 @@ class GETFinetuneModelConfig(BaseGETModelConfig):
     final_bn: bool = False
 
 
+
 class GETFinetune(BaseGETModel):
     def __init__(self, cfg: GETFinetuneModelConfig):
         super().__init__(cfg)
@@ -391,7 +392,6 @@ class GETFinetune(BaseGETModel):
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformer(**cfg.encoder)
         self.head_exp = ExpressionHead(cfg.head_exp)
-
         self.apply(self._init_weights)
 
     def get_input(self, batch):
@@ -432,6 +432,66 @@ class GETFinetune(BaseGETModel):
             'motif_mean_std': torch.randn(B, 2, 639).abs().float(),
         }
 
+@dataclass
+class GETFinetuneATACConfig(BaseGETModelConfig):
+    motif_scanner: MotifScannerConfig = field(
+        default_factory=MotifScannerConfig)
+    atac_attention: ATACSplitPoolConfig = field(
+        default_factory=ATACSplitPoolConfig)
+    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    head_exp: ATACHeadConfig = field(
+        default_factory= ATACHeadConfig)
+    use_atac: bool = False
+    final_bn: bool = False
+
+class GETFinetuneATAC(BaseGETModel):
+    def __init__(self, cfg: GETFinetuneModelConfig):
+        super().__init__(cfg)
+        self.motif_scanner = MotifScanner(cfg.motif_scanner)
+        self.atac_attention = ATACSplitPool(cfg.atac_attention)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.head_exp = ATACHead(cfg.head_exp)
+        self.apply(self._init_weights)
+
+    def get_input(self, batch):
+        return {
+            'sample_peak_sequence': batch['sample_peak_sequence'],
+            'sample_track': batch['sample_track'],
+            'padding_mask': batch['padding_mask'],
+            'chunk_size': batch['chunk_size'],
+            'n_peaks': batch['n_peaks'],
+            'max_n_peaks': batch['max_n_peaks'],
+            'motif_mean_std': batch['motif_mean_std'],
+        }
+
+    def forward(self, sample_peak_sequence, sample_track, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+        x = self.motif_scanner(sample_peak_sequence, motif_mean_std)
+        x_original = self.atac_attention(
+            x, sample_track, chunk_size, n_peaks, max_n_peaks)
+        x = self.region_embed(x_original)
+
+        x, _ = self.encoder(x, mask=padding_mask)
+        exp = F.softplus(self.head_exp(x))
+        return exp
+
+    def before_loss(self, output, batch):
+        pred = {'exp': output}
+        obs = {'exp': batch['exp_label']}
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, L = 2, 10, 200
+        return {
+            'sample_peak_sequence': torch.randint(0, 4, (B, R * L, 4)).float(),
+            'sample_track': torch.randn(B, R*L).float().abs(),
+            'padding_mask': torch.randint(0, 2, (B, R)).bool(),
+            'chunk_size':  torch.Tensor(([L]*R + [0]) * B).int().tolist(),
+            'n_peaks': (torch.zeros(B,) + R).int(),
+            'max_n_peaks': R,
+            'motif_mean_std': torch.randn(B, 2, 639).abs().float(),
+        }
 
 @dataclass
 class GETFinetuneMaxNormModelConfig(GETFinetuneModelConfig):
