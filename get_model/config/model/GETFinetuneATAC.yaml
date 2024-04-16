@@ -7,7 +7,7 @@ model:
     num_layers: 12
     num_heads: 12
     dropout: 0.1
-    output_dim: 2
+    output_dim: 1
     flash_attn: false
     pool_method: "mean"
     motif_scanner:

@@ -5,12 +5,21 @@ defaults:
   - machine/manitou_hvl2108
   - _self_
 
+dataset_name: finetune_atac
+
 task:
   layer_names: []
   test_mode: "perturb"
   gene_list:
     - "PPIF"
   mutations: null
+
+# task:
+#   layer_names: []
+#   test_mode: "perturb"
+#   gene_list:
+#     - "PPIF"
+#   mutations: 
 
 assembly: "hg38"
 

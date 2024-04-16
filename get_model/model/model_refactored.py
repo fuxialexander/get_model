@@ -478,7 +478,7 @@ class GETFinetuneATAC(BaseGETModel):
 
     def before_loss(self, output, batch):
         pred = {'exp': output}
-        obs = {'exp': batch['exp_label']}
+        obs = {'exp': batch['atpm'].unsqueeze(-1)}
         return pred, obs
 
     def generate_dummy_data(self):
