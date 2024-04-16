@@ -1,0 +1,6 @@
+data_path: "/pmglocal/hvl2108/GET_STARTED/get_data/"
+codebase: "/burg/pmg/users/xf2217/repos/get_model/"
+output_dir: "/pmglocal/hvl2108/output"
+num_devices: 1
+num_workers: 32
+batch_size: 8
