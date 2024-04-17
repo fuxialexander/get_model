@@ -220,12 +220,12 @@ class LitModel(L.LightningModule):
     #     )
     #     return [optimizer], [lr_scheduler]
 
-    def on_validation_epoch_end(self):
-        if self.cfg.dataset_name != 'bias_thp1':
-            trainer = self.trainer
-            metric = run_ppif_task(trainer, self)
-            step = trainer.global_step
-            self.logger.log_metrics(metric, step)
+    # def on_validation_epoch_end(self):
+    #     if self.cfg.dataset_name != 'bias_thp1':
+    #         trainer = self.trainer
+    #         metric = run_ppif_task(trainer, self)
+    #         step = trainer.global_step
+    #         self.logger.log_metrics(metric, step)
 
     # def on_validation_end(self):
     #     # Perform inference on the mutations
@@ -385,7 +385,7 @@ def run(cfg: DictConfig):
     model.dm = dm
     trainer = L.Trainer(
         max_epochs=cfg.training.epochs,
-        accelerator="gpu",
+        accelerator="cpu",
         num_sanity_val_steps=10,
         strategy="auto",
         devices=cfg.machine.num_devices,
@@ -393,7 +393,7 @@ def run(cfg: DictConfig):
                             name=cfg.wandb.run_name)],
         callbacks=[ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1, save_last=True, filename="best"),
                    LearningRateMonitor(logging_interval='epoch')],
-        plugins=[MixedPrecision(precision='16-mixed', device="cuda")],
+        # plugins=[MixedPrecision(precision='16-mixed', device="cuda")],
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
         gradient_clip_val=cfg.training.clip_grad,
         log_every_n_steps=4,

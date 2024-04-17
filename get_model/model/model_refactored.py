@@ -458,7 +458,7 @@ class GETFinetuneATAC(BaseGETModel):
     def get_input(self, batch):
         return {
             'sample_peak_sequence': batch['sample_peak_sequence'],
-            'sample_track': batch['sample_track'],
+            'sample_track': batch['sample_track'], #remove every parts that use sample_track
             'padding_mask': batch['padding_mask'],
             'chunk_size': batch['chunk_size'],
             'n_peaks': batch['n_peaks'],
