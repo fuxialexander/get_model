@@ -2,7 +2,7 @@ defaults:
   - base_config
   - model/GETChrombpNet@_here_
   - dataset/finetune_thp1@dataset
-  - machine/pc_chrombpnet
+  - machine/manitou
   - _self_
 
 task:
@@ -10,7 +10,7 @@ task:
   test_mode: "perturb"
   gene_list:
     - "PPIF"
-  mutations: "/home/xf2217/Projects/get_data/prepared_data.tsv"
+  mutations: null
 
 dataset_name: finetune_thp1
 assembly: "hg38"

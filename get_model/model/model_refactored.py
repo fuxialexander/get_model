@@ -436,8 +436,9 @@ class GETFinetune(BaseGETModel):
 class GETFinetuneATACConfig(BaseGETModelConfig):
     motif_scanner: MotifScannerConfig = field(
         default_factory=MotifScannerConfig)
-    atac_attention: ATACSplitPoolConfig = field(
-        default_factory=ATACSplitPoolConfig)
+    atac_attention: ConvPoolConfig = MISSING
+    # atac_attention: ATACSplitPoolConfig = field(
+    #     default_factory=ATACSplitPoolConfig)
     region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     head_exp: ATACHeadConfig = field(
@@ -446,10 +447,11 @@ class GETFinetuneATACConfig(BaseGETModelConfig):
     final_bn: bool = False
 
 class GETFinetuneATAC(BaseGETModel):
-    def __init__(self, cfg: GETFinetuneModelConfig):
+    # def __init__(self, cfg: GETFinetuneModelConfig):
+    def __init__(self, cfg: GETFinetuneATACConfig):
         super().__init__(cfg)
         self.motif_scanner = MotifScanner(cfg.motif_scanner)
-        self.atac_attention = ATACSplitPool(cfg.atac_attention)
+        self.atac_attention = ConvPool(cfg.atac_attention)
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformer(**cfg.encoder)
         self.head_exp = ATACHead(cfg.head_exp)
@@ -458,7 +460,7 @@ class GETFinetuneATAC(BaseGETModel):
     def get_input(self, batch):
         return {
             'sample_peak_sequence': batch['sample_peak_sequence'],
-            'sample_track': batch['sample_track'], #remove every parts that use sample_track
+            # 'sample_track': batch['sample_track'], #remove every parts that use sample_track
             'padding_mask': batch['padding_mask'],
             'chunk_size': batch['chunk_size'],
             'n_peaks': batch['n_peaks'],
@@ -466,15 +468,49 @@ class GETFinetuneATAC(BaseGETModel):
             'motif_mean_std': batch['motif_mean_std'],
         }
 
-    def forward(self, sample_peak_sequence, sample_track, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
-        x = self.motif_scanner(sample_peak_sequence, motif_mean_std)
-        x_original = self.atac_attention(
-            x, sample_track, chunk_size, n_peaks, max_n_peaks)
-        x = self.region_embed(x_original)
+    # def forward(self, sample_peak_sequence, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+    # # def forward(self, sample_peak_sequence, sample_track, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+    #     with open('debug_log.txt', 'a') as log_file:
+        
+    #         x = self.motif_scanner(sample_peak_sequence, motif_mean_std)
+    #         x_original = self.atac_attention(
+    #             x, chunk_size, n_peaks, max_n_peaks)
+    #         # x = self.region_embed(x_original)
+    #          # Print debug information to the log file
+    #         print("Shape of x after motif_scanner:", x.shape, file=log_file)
+    #         print("Shape of x_original:", x_original[0].shape if isinstance(x_original, (list, tuple)) else x_original.shape, file=log_file)
+    #         print("Type of x_original:", type(x_original), file=log_file)
+    #         x = self.region_embed(x_original[0])
+    #         x, _ =  self.encoder(x, mask=padding_mask)
+    #         # x = x.unsqueeze(0)
+    #         exp = F.softplus(self.head_exp(x))
+    #         return exp
 
-        x, _ = self.encoder(x, mask=padding_mask)
-        exp = F.softplus(self.head_exp(x))
-        return exp
+    def forward(self, sample_peak_sequence, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+        # Open the log file in append mode to keep adding logs
+        with open('debug_log.txt', 'a') as log_file:
+            x = self.motif_scanner(sample_peak_sequence, motif_mean_std)
+            x_original = self.atac_attention(x, chunk_size, n_peaks, max_n_peaks)
+            # Print debug information to the log file
+            print("Shape of x after motif_scanner:", x.shape, file=log_file)
+            print("Shape of x_original:", x_original[0].shape if isinstance(x_original, (list, tuple)) else x_original.shape, file=log_file)
+            print("Type of x_original:", type(x_original), file=log_file)
+
+            # Ensure x_original[0] is of shape (batch_size, 10)
+            if x_original[0].shape[1] != 10:
+                print(f"Error: Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}", file=log_file)
+                raise ValueError(f"Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}")
+
+            region_embed = torch.nn.Linear(in_features=x_original[0].shape[1], out_features=768)
+            x = region_embed(x_original[0])
+            x = x.unsqueeze(1)
+            N = x.shape[1]  
+            if padding_mask.shape[1] != N:                
+                padding_mask = padding_mask[:, :N]
+            x, _ = self.encoder(x, mask=padding_mask)
+            print("Shape of x after region_embed:", x.shape, file=log_file)            
+            exp = F.softplus(self.head_exp(x))
+            return exp
 
     def before_loss(self, output, batch):
         pred = {'exp': output}
@@ -485,7 +521,7 @@ class GETFinetuneATAC(BaseGETModel):
         B, R, L = 2, 10, 200
         return {
             'sample_peak_sequence': torch.randint(0, 4, (B, R * L, 4)).float(),
-            'sample_track': torch.randn(B, R*L).float().abs(),
+            # 'sample_track': torch.randn(B, R*L).float().abs(),
             'padding_mask': torch.randint(0, 2, (B, R)).bool(),
             'chunk_size':  torch.Tensor(([L]*R + [0]) * B).int().tolist(),
             'n_peaks': (torch.zeros(B,) + R).int(),

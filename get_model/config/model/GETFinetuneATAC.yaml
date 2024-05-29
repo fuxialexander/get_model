@@ -24,10 +24,13 @@ model:
       joint_kernel_num: 161
       joint_kernel_size: 3
       binary_atac: false
+      hidden_dim: 639 #tommy input
+      n_dil_layers: 4 #tommy input
+      profile_kernel_size: 75 #tommy input
       final_bn: false
     region_embed:
       num_regions: ${model.cfg.num_regions}
-      num_features: 800 # 639 + 161
+      num_features: 200 # 800 # 639 + 161
       embed_dim: ${model.cfg.embed_dim}
     encoder:
       num_heads: ${model.cfg.num_heads}
