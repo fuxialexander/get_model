@@ -5,12 +5,11 @@ defaults:
   - machine/manitou_hvl2108
   - _self_
 
-dataset_name: finetune_atac
 
 task:
   layer_names: []
   test_mode: "perturb"
-  gene_list:
+  gene_list: 
     - "PPIF"
   # mutations: null
   mutations: "/burg/pmg/users/xf2217/get_revision/PPIF/prepared_data.tsv"

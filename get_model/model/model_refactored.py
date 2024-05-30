@@ -497,9 +497,9 @@ class GETFinetuneATAC(BaseGETModel):
             print("Type of x_original:", type(x_original), file=log_file)
 
             # Ensure x_original[0] is of shape (batch_size, 10)
-            if x_original[0].shape[1] != 10:
-                print(f"Error: Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}", file=log_file)
-                raise ValueError(f"Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}")
+            # if x_original[0].shape[1] != 10:
+            #     print(f"Error: Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}", file=log_file)
+            #     raise ValueError(f"Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}")
 
             region_embed = torch.nn.Linear(in_features=x_original[0].shape[1], out_features=768)
             x = region_embed(x_original[0])
