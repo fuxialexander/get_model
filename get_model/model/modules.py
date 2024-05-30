@@ -10,12 +10,21 @@ import torch.nn.functional as F
 from torch import nn
 
 from get_model.model.motif import parse_meme_file
+from torch.nn.init import trunc_normal_
 
 
 def dict_to_device(dict, device):
     for key, value in dict.items():
         if isinstance(value, torch.Tensor):
             dict[key] = value.to(device)
+    return dict
+
+
+def dict_to_item(dict):
+    """Convert singleton tensor to floats in dict."""
+    for key, value in dict.items():
+        if isinstance(value, torch.Tensor) and value.numel() == 1:
+            dict[key] = value.item()
     return dict
 
 
@@ -115,6 +124,7 @@ class MotifScannerConfig(BaseConfig):
     bidirectional_except_ctcf: bool = False
     motif_prior: bool = True
     learnable: bool = False
+    has_bias: bool = True
 
 
 class MotifScanner(BaseModule):
@@ -134,18 +144,24 @@ class MotifScanner(BaseModule):
     def __init__(self, cfg: MotifScannerConfig):
         super().__init__(cfg)
         self.num_kernel = cfg.num_motif
+        self.include_reverse_complement = cfg.include_reverse_complement
         self.bidirectional_except_ctcf = cfg.bidirectional_except_ctcf
         self.motif_prior = cfg.motif_prior
         self.learnable = cfg.learnable
+        self.has_bias = cfg.has_bias
+        motifs, motif_names = self.load_pwm_as_kernel(
+            include_reverse_complement=cfg.include_reverse_complement)
+
         if cfg.include_reverse_complement and self.bidirectional_except_ctcf:
             self.num_kernel *= 2
+            motif_names = motif_names + ['CTCF_fwd', 'CTCF_rev']
         elif cfg.include_reverse_complement:
             self.num_kernel *= 2
+            motif_names = motif_names + [f"{name}_rev" for name in motif_names]
 
-        motifs = self.load_pwm_as_kernel(
-            include_reverse_complement=cfg.include_reverse_complement)
         self.motif = nn.Sequential(
-            nn.Conv1d(4, self.num_kernel, 29, padding="same", bias=True),
+            nn.Conv1d(4, self.num_kernel, 29,
+                      padding="same", bias=self.has_bias),
             # nn.BatchNorm1d(num_motif),
             nn.ReLU(),
         )
@@ -154,6 +170,8 @@ class MotifScanner(BaseModule):
                 motifs.shape == self.motif[0].weight.shape
             ), f"Motif prior shape ({motifs.shape}) doesn't match model ({self.motif[0].weight.shape})."
             self.motif[0].weight.data = motifs
+            self.motif_names = motif_names
+
         if not self.learnable:
             self.motif[0].weight.requires_grad = False
 
@@ -166,13 +184,13 @@ class MotifScanner(BaseModule):
         if not os.path.exists("consensus_pwms.meme"):
             os.system(f"wget {pwm_path}")
         # load pwm
-        motifs = parse_meme_file("consensus_pwms.meme")
+        motifs, motif_names = parse_meme_file("consensus_pwms.meme")
         motifs_rev = motifs[:, ::-1, ::-1].copy()
         # construct reverse complement
         motifs = torch.tensor(motifs)
         motifs_rev = torch.tensor(motifs_rev)
         motifs = torch.cat([motifs, motifs_rev], dim=0)
-        return motifs.permute(0, 2, 1).float()
+        return motifs.permute(0, 2, 1).float(), motif_names
 
     def normalize_motif(self, x, motif_mean_std):
         return (x - motif_mean_std[:, 0, :].unsqueeze(1)) / motif_mean_std[:, 1, :].unsqueeze(1)
@@ -180,7 +198,7 @@ class MotifScanner(BaseModule):
     def forward(self, x, motif_mean_std=None):
         x = x.permute(0, 2, 1)
         x = self.motif(x)
-        if self.bidirectional_except_ctcf:
+        if self.include_reverse_complement and self.bidirectional_except_ctcf:
             # get ctcf scanned score for both motif and reverse complement motif. idx of ctcf is 77 and 637+77=714
             ctcf = x[:, 77, :]
             ctcf_rev = x[:, 714, :]
@@ -188,6 +206,8 @@ class MotifScanner(BaseModule):
             x = x[:, :637, :] + x[:, 637:, :]
             # add ctcf/ctcf_rev score to the end
             x = torch.cat([x, ctcf.unsqueeze(1), ctcf_rev.unsqueeze(1)], dim=1)
+        elif self.include_reverse_complement:
+            x = x[:, :637, :] + x[:, 637:, :]  # output should be 637 dim
         x = x.permute(0, 2, 1)
         if motif_mean_std is not None:
             x = self.normalize_motif(x, motif_mean_std)
@@ -224,6 +244,11 @@ class ExpressionHead(BaseModule):
             self.head = nn.Linear(cfg.embed_dim + 1, cfg.output_dim)
         else:
             self.head = nn.Linear(cfg.embed_dim, cfg.output_dim)
+
+        trunc_normal_(self.head.weight, std=.02)
+
+        self.head.weight.data.mul_(0.001)
+        self.head.bias.data.mul_(0.001)
 
     def forward(self, x, atac=None):
         if self.use_atac:
@@ -265,6 +290,85 @@ class ATACHead(BaseModule):
         x = self.fc2(x)
         x = self.drop2(x)
         return x
+
+
+class OuterProductMean(nn.Module):
+    """
+    Implements a simplified version of the OuterProductMean.
+    """
+
+    def __init__(self, c_m, c_z, c_hidden, eps=1e-3):
+        """
+        Args:
+            c_m: region embedding channel dimension
+            c_z: Pair embedding channel dimension
+            c_hidden: Hidden channel dimension
+        """
+        super(OuterProductMean, self).__init__()
+        self.eps = eps
+        self.layer_norm = nn.LayerNorm(c_m)
+        self.linear_1 = nn.Linear(c_m, c_hidden)
+        self.linear_2 = nn.Linear(c_m, c_hidden)
+        self.linear_out = nn.Linear(c_hidden ** 2, c_z)
+
+    def forward(self, m: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            m: [*, N_region, C_m] region embedding
+            mask: [*, N_region] MSA mask, if None, create a mask of ones
+        Returns:
+            [*, N_region, N_region, C_z] pair embedding update
+        """
+        if mask is None:
+            mask = m.new_ones(m.shape[:-1])
+
+        ln = self.layer_norm(m)
+        mask = mask.unsqueeze(-1)
+
+        a = self.linear_1(ln) * mask
+        b = self.linear_2(ln) * mask
+
+        # Calculate the outer product mean -> [batch, N, N, C, C]
+        outer = torch.einsum("...bc,...de->...bdce", a, b)
+        outer = outer.reshape(outer.shape[:-2] + (-1,))
+        outer = self.linear_out(outer)
+        norm = torch.einsum("...b,...d->...bd", mask, mask) + self.eps
+        outer = outer / norm
+
+        return outer
+
+
+class OuterSum(nn.Module):
+    """
+    from 
+    """
+
+
+@dataclass
+class HiCHeadConfig(BaseConfig):
+    """Configuration class for the HiC head.
+
+    Args:
+        embed_dim (int): Dimension of the embedding.
+        hidden_dim (int): Dimension of the hidden layer.
+        output_dim (int): Dimension of the output.
+        drop (float): Dropout rate. Defaults to 0.1."""
+    _target_: str = "get_model.model.modules.HiCHeadConfig"
+    embed_dim: int = 768
+    hidden_dim: int = 16
+    output_dim: int = 1
+
+
+class HiCHead(BaseModule):
+    """HiC head using OuterProductMean"""
+
+    def __init__(self, cfg: HiCHeadConfig):
+        super().__init__(cfg)
+        self.outer_product = OuterProductMean(
+            cfg.embed_dim, cfg.output_dim, cfg.hidden_dim)
+
+    def forward(self, x, mask=None):
+        return self.outer_product(x, mask)
 
 
 def pool(x, method='mean'):
@@ -432,7 +536,7 @@ class DilatedConv1d(BaseModule):
     def __init__(self, cfg: DilatedConv1dConfig):
         super().__init__(cfg)
         self.conv = nn.Conv1d(cfg.dim, cfg.dim, cfg.kernel_size,
-                              padding='same', dilation=cfg.dilation)
+                              padding='valid', dilation=cfg.dilation)
         self.activation = nn.ReLU()
         # self.batch_norm = nn.BatchNorm1d(cfg.dim)
 

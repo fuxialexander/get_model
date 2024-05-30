@@ -500,3 +500,7 @@ dependencies:
       - scanpy==1.9.8
       - MOODS-python
       - pyranges @ git+https://github.com/pyranges/pyranges@master
+      - hydra-core
+      - lightning
+      - pytest
+      - minLoRA @ git+https://github.com/cccntu/minLoRA.git@master

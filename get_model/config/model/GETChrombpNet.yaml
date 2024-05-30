@@ -7,6 +7,7 @@ model:
       bidirectional_except_ctcf: false
       motif_prior: false
       learnable: true
+      has_bias: true
     atac_attention:
       pool_method: mean
       motif_dim: 512
@@ -16,11 +17,9 @@ model:
     loss:
       components:
         atpm:
-          _target_: torch.nn.MSELoss
-          reduction: "mean"
+          _target_: get_model.model.model_refactored.log1pMSELoss
         aprofile:
-          _target_: torch.nn.MSELoss
-          reduction: "mean"
+          _target_: get_model.model.model_refactored.MNLLLoss
       weights:
         atpm: 10.0
         aprofile: 1.0
@@ -38,6 +37,7 @@ model:
           bidirectional_except_ctcf: false
           motif_prior: false
           learnable: true
+          has_bias: true
         atac_attention:
           pool_method: mean
           motif_dim: 128
@@ -46,4 +46,4 @@ model:
           profile_kernel_size: 75
         loss: ${model.cfg.loss}
         metrics: ${model.cfg.metrics}
-    bias_ckpt: "/home/xf2217/Projects/get_model/chrombpnet/x4lb0c3n/checkpoints/best.ckpt"
+    bias_ckpt: "/home/xf2217/Projects/get_model/logs/chrombpnet_thp1_bias/version_0/checkpoints/best.ckpt"

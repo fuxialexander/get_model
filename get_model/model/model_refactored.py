@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 
 import torch
@@ -9,24 +10,94 @@ from hydra.utils import instantiate
 from omegaconf import MISSING, DictConfig
 from torch.nn.init import trunc_normal_
 
-from get_model.model.modules import (ATACSplitPool, ATACSplitPoolConfig,
-                                     ATACSplitPoolMaxNorm,
+from get_model.model.modules import (ATACHead, ATACHeadConfig, HiCHead, HiCHeadConfig,
+                                     ATACSplitPool,
+                                     ATACSplitPoolConfig, ATACSplitPoolMaxNorm,
                                      ATACSplitPoolMaxNormConfig, BaseConfig,
                                      BaseModule, ConvPool, ConvPoolConfig,
                                      ExpressionHead, ExpressionHeadConfig,
                                      MotifScanner, MotifScannerConfig,
                                      RegionEmbed, RegionEmbedConfig, SplitPool,
                                      SplitPoolConfig, dict_to_device)
+from get_model.model.position_encoding import AbsolutePositionalEncoding
 from get_model.model.transformer import GETTransformer
 
 
 class MNLLLoss(nn.Module):
     def __init__(self):
-        super(MNLLLoss, self).__init__()
+        """
+From @jmschrei/bpnet-lite
+A loss function based on the multinomial negative log-likelihood.
 
-    def forward(self, x, y):
-        """Compute the loss use -y* log(softmax(x))"""
-        return (-y.squeeze(1) * F.log_softmax(x, dim=-1)).mean()
+    This loss function takes in a tensor of normalized log probabilities such
+    that the sum of each row is equal to 1 (e.g. from a log softmax) and
+    an equal sized tensor of true counts and returns the probability of
+    observing the true counts given the predicted probabilities under a
+    multinomial distribution. Can accept tensors with 2 or more dimensions
+    and averages over all except for the last axis, which is the number
+    of categories.
+
+    Adapted from Alex Tseng.
+
+    Parameters
+    ----------
+    logps: torch.tensor, shape=(n, ..., L)
+            A tensor with `n` examples and `L` possible categories.
+
+    true_counts: torch.tensor, shape=(n, ..., L)
+            A tensor with `n` examples and `L` possible categories.
+
+    Returns
+    -------
+    loss: float
+            The multinomial log likelihood loss of the true counts given the
+            predicted probabilities, averaged over all examples and all other
+            dimensions.
+        """
+        super().__init__()
+
+    def forward(self, logps, true_counts):
+        log_fact_sum = torch.lgamma(torch.sum(true_counts, dim=-1) + 1)
+        log_prod_fact = torch.sum(torch.lgamma(true_counts + 1), dim=-1)
+        log_prod_exp = torch.sum(true_counts * logps, dim=-1)
+        return (-log_fact_sum + log_prod_fact - log_prod_exp).mean()
+
+
+class log1pMSELoss(nn.Module):
+    def __init__(self):
+        """
+From @jmschrei/bpnet-lite
+A MSE loss on the log(x+1) of the inputs.
+
+    This loss will accept tensors of predicted counts and a vector of true
+    counts and return the MSE on the log of the labels. The squared error
+    is calculated for each position in the tensor and then averaged, regardless
+    of the shape.
+
+    Note: The predicted counts are in log space but the true counts are in the
+    original count space.
+
+    Parameters
+    ----------
+    log_predicted_counts: torch.tensor, shape=(n, ...)
+            A tensor of log predicted counts where the first axis is the number of
+            examples. Important: these values are already in log space.
+
+    true_counts: torch.tensor, shape=(n, ...)
+            A tensor of the true counts where the first axis is the number of
+            examples.
+
+    Returns
+    -------
+    loss: torch.tensor, shape=(n, 1)
+            The MSE loss on the log of the two inputs, averaged over all examples
+            and all other dimensions.
+    """
+        super().__init__()
+
+    def forward(self, log_predicted_counts, true_counts):
+        log_true = torch.log(true_counts + 1)
+        return torch.mean(torch.square(log_true - log_predicted_counts))
 
 
 @dataclass
@@ -206,6 +277,10 @@ class BaseGETModel(BaseModule):
 
     def get_layer_names(self):
         return list(self._modules.keys())
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'pos_embed', 'cls_token'}
 
 
 @dataclass
@@ -444,6 +519,34 @@ class GETFinetuneATAC(BaseGETModel):
 
 
 @dataclass
+class GETFinetuneGBMConfig(GETFinetuneModelConfig):
+    head_atac: ExpressionHeadConfig = field(
+        default_factory=ExpressionHeadConfig)
+
+
+class GETFinetuneGBM(GETFinetune):
+    def __init__(self, cfg: GETFinetuneGBMConfig):
+        super().__init__(cfg)
+        self.head_atac = ATACHead(cfg.head_atac)
+
+    def forward(self, sample_peak_sequence, sample_track, padding_mask, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+        x = self.motif_scanner(sample_peak_sequence, motif_mean_std)
+        x_original = self.atac_attention(
+            x, sample_track, chunk_size, n_peaks, max_n_peaks)
+        x = self.region_embed(x_original)
+
+        x, _ = self.encoder(x, mask=padding_mask)
+        exp = F.softplus(self.head_exp(x))
+        atac = F.softplus(self.head_atac(x_original))
+        return exp, atac
+
+    def before_loss(self, output, batch):
+        pred = {'exp': output[0], 'atac': output[1]}
+        obs = {'exp': batch['exp_label'], 'atac': batch['atpm'].unsqueeze(-1)}
+        return pred, obs
+
+
+@dataclass
 class GETFinetuneMaxNormModelConfig(GETFinetuneModelConfig):
     atac_attention: ATACSplitPoolMaxNormConfig = MISSING
 
@@ -452,6 +555,62 @@ class GETFinetuneMaxNorm(GETFinetune):
     def __init__(self, cfg: GETFinetuneMaxNormModelConfig):
         super().__init__(cfg)
         self.atac_attention = ATACSplitPoolMaxNorm(cfg.atac_attention)
+
+
+@dataclass
+class GETRegionPretrainModelConfig(BaseGETModelConfig):
+    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    head_mask: dict = field(default_factory=lambda: {
+                            'in_features': 768, 'out_features': 283})
+    mask_token: dict = field(default_factory=lambda: {
+                             'embed_dim': 768, 'std': 0.02})
+
+
+class GETRegionPretrain(BaseGETModel):
+    def __init__(self, cfg: GETRegionPretrainModelConfig):
+        super().__init__(cfg)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.head_mask = nn.Linear(**cfg.head_mask)
+        self.mask_token = nn.Parameter(
+            torch.zeros(1, 1, cfg.mask_token.embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        trunc_normal_(self.mask_token, std=cfg.mask_token.std)
+
+        self.apply(self._init_weights)
+
+    def get_input(self, batch):
+        return {
+            'region_motif': batch['region_motif'],
+            'mask': batch['mask'].unsqueeze(-1).bool()
+        }
+
+    def forward(self, region_motif, mask):
+        x = self.region_embed(region_motif)
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        mask_token = self.mask_token.expand(B, N, -1)
+        w = mask.type_as(mask_token)
+        x = x * (1 - w) + mask_token * w
+        x = torch.cat((cls_tokens, x), dim=1)
+        x, _ = self.encoder(x)
+        x = x[:, 1:][mask.squeeze()].reshape(B, -1, C)
+        x_masked = self.head_mask(x)
+        return x_masked, region_motif, mask
+
+    def before_loss(self, output, batch):
+        x_masked, x_original, loss_mask = output
+        B, _, C = x_original.shape
+        pred = {'masked': x_masked}
+        obs = {'masked': x_original[loss_mask.squeeze()].reshape(B, -1, C)}
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, M = 2, 900, 283
+        return {
+            'region_motif': torch.randn(B, R, M).float().abs(),
+        }
 
 
 @dataclass
@@ -469,6 +628,159 @@ class GETRegionFinetune(BaseGETModel):
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformer(**cfg.encoder)
         self.head_exp = ExpressionHead(cfg.head_exp)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        self.apply(self._init_weights)
+
+    def get_input(self, batch, perturb=False):
+        return {
+            'region_motif': batch['region_motif'],
+        }
+
+    def forward(self, region_motif):
+
+        x = self.region_embed(region_motif)
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x, _ = self.encoder(x)
+        x = x[:, 1:]
+        exp = nn.Softplus()(self.head_exp(x))
+        return exp
+
+    def before_loss(self, output, batch):
+
+        pred = {'exp': output}
+        obs = {'exp': batch['exp_label']}
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, M = 2, 900, 283
+        return {
+            'region_motif': torch.randn(B, R, M).float().abs(),
+        }
+
+class GETRegionFinetunePositional(GETRegionFinetune):
+    def __init__(self, cfg: GETRegionFinetuneModelConfig):
+        super().__init__(cfg)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.pos_embed = AbsolutePositionalEncoding(cfg.region_embed.embed_dim, dropout=0.1, max_len=1000)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.head_exp = ExpressionHead(cfg.head_exp)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        self.apply(self._init_weights)
+
+    def get_input(self, batch, perturb=False):
+        return {
+            'region_motif': batch['region_motif'],
+        }
+
+    def forward(self, region_motif):
+
+        x = self.region_embed(region_motif)
+        x = self.pos_embed(x)
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x, _ = self.encoder(x)
+        x = x[:, 1:]
+        exp = nn.Softplus()(self.head_exp(x))
+        return exp
+
+    def before_loss(self, output, batch):
+
+        pred = {'exp': output}
+        obs = {'exp': batch['exp_label']}
+        return pred, obs
+
+
+@dataclass
+class MLPRegionFinetuneModelConfig(BaseGETModelConfig):
+    use_atac: bool = False
+    input_dim: int = 283
+    output_dim: int = 2
+
+
+class MLPRegionFinetune(GETRegionFinetune):
+    def __init__(self, cfg: MLPRegionFinetuneModelConfig):
+        super(GETRegionFinetune, self).__init__(cfg)
+        self.linear1 = torch.nn.Linear(cfg.input_dim, 512)
+        self.relu1 = torch.nn.ReLU()
+        self.linear2 = torch.nn.Linear(512, 256)
+        self.relu2 = torch.nn.ReLU()
+        self.linear3 = torch.nn.Linear(256, cfg.output_dim)
+
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.relu1(x)
+        x = self.linear2(x)
+        x = self.relu2(x)
+        x = self.linear3(x)
+        x = torch.nn.Softplus()(x)
+        return x
+
+
+@dataclass
+class GETRegionFinetuneATACModelConfig(BaseGETModelConfig):
+    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    head_exp: ExpressionHeadConfig = field(
+        default_factory=ExpressionHeadConfig)
+
+
+class GETRegionFinetuneATAC(BaseGETModel):
+    def __init__(self, cfg: GETRegionFinetuneModelConfig):
+        super().__init__(cfg)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.head_exp = ExpressionHead(cfg.head_exp)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        self.apply(self._init_weights)
+
+    def get_input(self, batch):
+        input = batch['region_motif'].clone()
+        input[:, :, -1] = 1
+        return {
+            'region_motif': input,
+        }
+
+    def forward(self, region_motif):
+
+        x = self.region_embed(region_motif)
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x, _ = self.encoder(x)
+        x = x[:, 1:]
+        atpm = nn.Softplus()(self.head_exp(x))
+        return atpm
+
+    def before_loss(self, output, batch):
+
+        pred = {'atpm': output}
+        obs = {'atpm': batch['region_motif'][:, :, -1].unsqueeze(-1)}
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, M = 2, 900, 283
+        return {
+            'region_motif': torch.randn(B, R, M).float().abs(),
+        }
+
+
+@dataclass
+class GETRegionFinetuneHiCModelConfig(BaseGETModelConfig):
+    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    head_hic: HiCHeadConfig = field(
+        default_factory=HiCHeadConfig)
+
+
+class GETRegionFinetuneHiC(BaseGETModel):
+    def __init__(self, cfg: GETRegionFinetuneHiCModelConfig):
+        super().__init__(cfg)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.head_hic = HiCHead(cfg.head_hic)
 
         self.apply(self._init_weights)
 
@@ -480,14 +792,15 @@ class GETRegionFinetune(BaseGETModel):
     def forward(self, region_motif):
 
         x = self.region_embed(region_motif)
+
         x, _ = self.encoder(x)
-        exp = nn.Softplus()(self.head_exp(x))
-        return exp
+        hic = self.head_hic(x)
+        return hic
 
     def before_loss(self, output, batch):
-        
-        pred = {'exp': output}
-        obs = {'exp': batch['exp_label']}
+
+        pred = {'hic': output.squeeze(-1)}
+        obs = {'hic': batch['hic_matrix'].float()}
         return pred, obs
 
     def generate_dummy_data(self):
@@ -547,8 +860,10 @@ class GETChrombpNetBias(BaseGETModel):
     def before_loss(self, output, batch):
         pred = output
         B, R = pred['atpm'].shape
-        obs = {'atpm': batch['sample_track'].mean(dim=1).unsqueeze(-1),
+        obs = {'atpm': batch['sample_track'].sum(dim=1).unsqueeze(-1),
                'aprofile': batch['sample_track']}
+        pred['aprofile'] = torch.nn.functional.log_softmax(
+            pred['aprofile'], dim=-1)
         pred['aprofile'], obs['aprofile'] = self.crop_output(
             pred['aprofile'], obs['aprofile'], B, R)
         return pred, obs
@@ -594,19 +909,35 @@ class GETChrombpNet(GETChrombpNetBias):
 
         self.apply(self._init_weights)
 
-    def forward(self, sample_peak_sequence, chunk_size, n_peaks, max_n_peaks, motif_mean_std):
+    def get_input(self, batch, perturb=False):
+        result = {
+            'sample_peak_sequence': batch['sample_peak_sequence'],
+            'chunk_size': batch['chunk_size'],
+            'n_peaks': batch['n_peaks'],
+            'max_n_peaks': batch['max_n_peaks'],
+            'motif_mean_std': batch['motif_mean_std'],
+        }
+        if perturb:
+            result['output_bias'] = False
+        return result
+
+    def forward(self, sample_peak_sequence, chunk_size, n_peaks, max_n_peaks, motif_mean_std, output_bias=True):
         x = self.motif_scanner(sample_peak_sequence)
         atpm, aprofile = self.atac_attention(
             x, chunk_size, n_peaks, max_n_peaks)
+        if not output_bias:
+            logging.info(
+                'output_bias is False, return atpm and aprofile for atac model only')
+            return {'atpm': atpm, 'aprofile': aprofile}
         if self.with_bias:
             bias_output = self.bias_model(
                 sample_peak_sequence, chunk_size, n_peaks, max_n_peaks, motif_mean_std)
             bias_atpm, bias_aprofile = bias_output['atpm'], bias_output['aprofile']
             atpm = torch.logsumexp(torch.stack(
                 [atpm, bias_atpm], dim=0), dim=0)
-            # diff_length = aprofile.shape[1] - bias_aprofile.shape[1]
-            # crop_length = diff_length // 2
-            # bias_aprofile = F.pad(
-            #     bias_aprofile, (crop_length, diff_length - crop_length), "constant", 0)
+            diff_length = aprofile.shape[1] - bias_aprofile.shape[1]
+            crop_length = diff_length // 2
+            bias_aprofile = F.pad(
+                bias_aprofile, (crop_length, diff_length - crop_length), "constant", 0)
             aprofile = aprofile + bias_aprofile
         return {'atpm': atpm, 'aprofile': aprofile}

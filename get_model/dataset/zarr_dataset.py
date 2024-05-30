@@ -18,8 +18,6 @@ from scipy.sparse import coo_matrix, csr_matrix, load_npz, vstack
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from get_model.config.config import DatasetConfig
-
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,14 +26,16 @@ logging.basicConfig(level=logging.INFO,
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
-def _chromosome_splitter(all_chromosomes: list, leave_out_chromosomes: str, is_train=True):
+def _chromosome_splitter(all_chromosomes: list, leave_out_chromosomes: str | None, is_train=True):
     input_chromosomes = all_chromosomes.copy()
-    if ',' in leave_out_chromosomes:
+    if leave_out_chromosomes is None:
+        leave_out_chromosomes = []
+    elif ',' in leave_out_chromosomes:
         leave_out_chromosomes = leave_out_chromosomes.split(",")
     else:
         leave_out_chromosomes = [leave_out_chromosomes]
 
-    if is_train:
+    if is_train or leave_out_chromosomes == [""] or leave_out_chromosomes == []:
         input_chromosomes = [
             chrom for chrom in input_chromosomes if chrom not in leave_out_chromosomes]
     else:
@@ -244,7 +244,7 @@ class ZarrDataPool(object):
     def __init__(self, zarr_dirs=None, genome_seq_zarr=None, sequence_obj=None, insulation_paths=None, peak_name='peaks', negative_peak_name=None, negative_peak_ratio=0.1, insulation_subsample_ratio=0.1,
                  max_peak_length=None, center_expand_target=None,
                  motif_mean_std_obj=None, additional_peak_columns=None, keep_celltypes=None, leave_out_celltypes=None,
-                 leave_out_chromosomes=None, non_redundant='max_depth', random_shift_peak=None,
+                 leave_out_chromosomes=None, peak_count_filter=0, non_redundant='max_depth', random_shift_peak=None,
                  filter_by_min_depth=None, is_train=True, hic_path=None):
         # Rest of the code
         logging.info('Initializing ZarrDataPool')
@@ -261,6 +261,7 @@ class ZarrDataPool(object):
         self.keep_celltypes = keep_celltypes
         self.leave_out_celltypes = leave_out_celltypes
         self.leave_out_chromosomes = leave_out_chromosomes
+        self.peak_count_filter = peak_count_filter
         self.additional_peak_columns = additional_peak_columns
         self.is_train = is_train
         self.negative_peak_ratio = negative_peak_ratio
@@ -273,6 +274,16 @@ class ZarrDataPool(object):
         self.calculate_metadata()
         logging.info('ZarrDataPool initialized')
 
+    @property
+    def celltype_to_data_key(self):
+        if not hasattr(self, '_celltype_to_data_key'):
+            celltype_to_data_key = {}
+            for data_key, cdz in self.zarr_dict.items():
+                for celltype_id in cdz.ids:
+                    celltype_to_data_key[celltype_id] = data_key
+            self._celltype_to_data_key = celltype_to_data_key
+        return self._celltype_to_data_key
+
     def initialize_datasets(self):
         """
         Initialize the zarr datasets and load peaks and insulation data.
@@ -281,7 +292,8 @@ class ZarrDataPool(object):
         self.data_keys = list(self.zarr_dict.keys())
         self.assembly_dict = {data_key: cdz.assembly for data_key,
                               cdz in self.zarr_dict.items()}
-        self.peaks_dict = self._load_peaks()
+        self.peaks_dict = self._load_peaks(
+            self.peak_name, self.peak_count_filter)
         self.insulation = self._load_insulation()
         self.hic_obj = self._load_hic()
 
@@ -436,14 +448,12 @@ class ZarrDataPool(object):
         """Return a list of peak names for a celltype, use glob peaks*"""
         return [key for key in self.zarr_dict[data_key].dataset[celltype_id].keys() if 'peaks' in key]
 
-    def _load_peaks(self, peak_name=None):
+    def _load_peaks(self, peak_name=None, peak_count_filter=0):
         """
         Load peaks data which is a dictionary of pandas dataframe feather
         """
         logging.info('Loading peaks data')
         peaks_dict = {}
-        if peak_name is None:
-            peak_name = self.peak_name
         for data_key, cdz in self.zarr_dict.items():
             for celltype_id in cdz.ids:
                 # check if the peak name exists in the zarr
@@ -483,7 +493,8 @@ class ZarrDataPool(object):
                 upper_count_threshold = peak['Count'].quantile(0.9999)
                 peak = peak.query(
                     'Count>@lower_count_threshold and Count<@upper_count_threshold').reset_index(drop=True)
-                peaks_dict[celltype_id] = peak
+                peaks_dict[celltype_id] = pr(peak.query(
+                    'Count>@peak_count_filter').reset_index(drop=True)).sort().df
 
         return peaks_dict
 
@@ -565,7 +576,7 @@ class ZarrDataPool(object):
             peak_sequence[start-window_start:end-window_start] = 1
         return csr_matrix(peak_sequence*sequence)
 
-    def _query_peaks(self, celltype_id, chr_name, start, end, random_shift=None):
+    def _query_peaks(self, celltype_id, chr_name, start, end, random_shift_peak=None):
         """
         Query peaks data for a celltype and a window.
 
@@ -582,15 +593,14 @@ class ZarrDataPool(object):
         This method is used by PreloadDataPack to query peaks data.
         """
         df = self.peaks_dict[celltype_id]
-        if random_shift is not None and isinstance(random_shift, int):
-            random_int = np.random.randint(-random_shift,
-                                           random_shift, size=df.shape[0])
+        if random_shift_peak is not None and isinstance(random_shift_peak, int) and random_shift_peak > 0:
+            random_int = np.random.randint(-random_shift_peak,
+                                           random_shift_peak, size=df.shape[0])
         else:
             random_int = 0
         df['Start'] = df['Start'].values + random_int
         df['End'] = df['End'].values + random_int
-        df = df.query(
-            'Chromosome == @chr_name and Start >= @start and End <= @end')
+        df = df[(df.Chromosome == chr_name) & (df.Start >= start) & (df.End <= end)]
         return df
 
     def _query_insulation(self, chr_name, start, end):
@@ -627,6 +637,18 @@ class ZarrDataPool(object):
             else:
                 celltype_idx -= cdz.n_celltypes
         raise ValueError(f'Celltype index {celltype_idx} is out of range')
+
+    def _get_data_key(self, celltype):
+        """
+        Get the data_key from the celltype ID
+
+        Parameters:
+        celltype (str): The ID of the cell type.
+
+        Returns:
+        str: The data_key.
+        """
+        return self.celltype_to_data_key[celltype]
 
     def _get_chr_chunk_idx(self, chunk_idx):
         """
@@ -1149,9 +1171,11 @@ class PretrainDataset(Dataset):
                  additional_peak_columns=None,
                  max_peak_length=None,
                  center_expand_target=None,
+                 peak_count_filter=0,
                  n_peaks_lower_bound=5,
                  n_peaks_upper_bound=200,
                  n_peaks_sample_gap=50,
+
                  non_redundant=False,
                  filter_by_min_depth=False,
 
@@ -1237,6 +1261,7 @@ class PretrainDataset(Dataset):
         self.n_peaks_lower_bound = n_peaks_lower_bound
         self.n_peaks_upper_bound = n_peaks_upper_bound
         self.n_peaks_sample_gap = n_peaks_sample_gap
+        self.peak_count_filter = peak_count_filter
         self.negative_peak_ratio = negative_peak_ratio
         self.random_shift_peak = random_shift_peak
         self.use_insulation = use_insulation
@@ -1269,6 +1294,7 @@ class PretrainDataset(Dataset):
                                      keep_celltypes=self.keep_celltypes,
                                      leave_out_celltypes=self.leave_out_celltypes,
                                      leave_out_chromosomes=self.leave_out_chromosomes,
+                                     peak_count_filter=self.peak_count_filter,
                                      is_train=self.is_train, non_redundant=self.non_redundant, filter_by_min_depth=self.filter_by_min_depth,
                                      negative_peak_ratio=self.negative_peak_ratio, random_shift_peak=self.random_shift_peak, hic_path=self.hic_path)
 
@@ -1341,16 +1367,54 @@ class InferenceDataset(PretrainDataset):
     def __init__(self, assembly, gencode_obj, gene_list=None, **kwargs):
         super().__init__(**kwargs)
         self.gencode_obj = gencode_obj[assembly]
+        if isinstance(gene_list, str):
+            if ',' in gene_list:
+                gene_list = gene_list.split(',')
+            elif os.path.exists(gene_list):
+                gene_list = np.loadtxt(gene_list, dtype=str)
         self.gene_list = gene_list if gene_list is not None else self.gencode_obj.gtf['gene_name'].unique(
         )
         self.tss_chunk_idx = self._generate_tss_chunk_idx()
 
+    @property
+    def accessible_genes(self):
+        """Find overlap between self.tss_chunk_idx and self.datapool.peaks_dict"""
+        if not hasattr(self, '_accessible_genes'):
+            _accessible_genes = {key: pr(self.tss_chunk_idx).join(
+                pr(peak)).df['gene_name'].unique() for key, peak in self.datapool.peaks_dict.items()}
+            if self.gene_list is not None:
+                _accessible_genes = {key: np.intersect1d(
+                    genes, self.gene_list) for key, genes in _accessible_genes.items()}
+            self._accessible_genes = _accessible_genes
+        return self._accessible_genes
+
+    @property
+    def gene_celltype_pair(self):
+        """get pairs of accessible genes and celltype as a list"""
+        if not hasattr(self, '_gene_celltype_pair'):
+            gene_celltype_pair = []
+            for celltype_id, genes in self.accessible_genes.items():
+                for gene in genes:
+                    # validate gene in celltype
+                    data_key = self.datapool.celltype_to_data_key[celltype_id]
+                    info = self._get_window_idx_for_gene_and_celltype(
+                        data_key, celltype_id, gene)
+                    window_idx = info['window_idx'][0]
+                    gene_info = self._get_gene_info_from_window_idx(
+                        window_idx).query('gene_name==@gene')
+                    if gene_info.shape[0] == 0:
+                        continue
+                    gene_celltype_pair.append((celltype_id, gene))
+
+            self._gene_celltype_pair = gene_celltype_pair
+        return self._gene_celltype_pair
+
     def _generate_tss_chunk_idx(self):
         """Determine the windows to extract for each gene"""
-        if os.path.exists(self.gencode_obj.feather_file.replace('.feather', '_tss_chunk_idx.feather')):
-            self.tss_chunk_idx = pd.read_feather(
-                self.gencode_obj.feather_file.replace('.feather', '_tss_chunk_idx.feather'))
-            return self.tss_chunk_idx
+        # if os.path.exists(self.gencode_obj.feather_file.replace('.feather', '_tss_chunk_idx.feather')):
+        #     self.tss_chunk_idx = pd.read_feather(
+        #         self.gencode_obj.feather_file.replace('.feather', '_tss_chunk_idx.feather'))
+        #     return self.tss_chunk_idx
 
         self.tss_chunk_idx = self.gencode_obj.gtf.query(
             'gene_name in @self.gene_list').copy()
@@ -1405,19 +1469,18 @@ class InferenceDataset(PretrainDataset):
             'strand': strand}
 
     def _get_gene_info_from_window_idx(self, window_idx):
-        chunk_idx = window_idx % self.datapool.genome_chunk_length
+        # TODO: genome_chunk_length is affected by leave out chromosome by tss_chunk_idx is not
+        chunk_idx = window_idx % self.tss_chunk_idx.chunk_idx.max()
         gene_df = self.tss_chunk_idx.query(
             'chunk_idx==@chunk_idx or chunk_idx==@chunk_idx+1')
         return gene_df
 
     def __len__(self):
-        return len(self.gene_list) * self.datapool.n_celltypes
+        return len(self.gene_celltype_pair)
 
     def __getitem__(self, idx):
-        celltype_id = idx // len(self.gene_list)
-        gene_idx = idx % len(self.gene_list)
-        gene_name = self.gene_list[gene_idx]
-        data_key, celltype_id = self.datapool._get_celltype(celltype_id)
+        celltype_id, gene_name = self.gene_celltype_pair[idx]
+        data_key = self.datapool.celltype_to_data_key[celltype_id]
         return self.get_item_for_gene_in_celltype(data_key, celltype_id, gene_name, self.mutations, self.peak_inactivation)
 
     def get_item_for_gene_in_celltype(self, data_key, celltype_id, gene_name, track_start=None, track_end=None, mutations=None, peak_inactivation=None):
@@ -1426,18 +1489,8 @@ class InferenceDataset(PretrainDataset):
         window_idx = info['window_idx'][0]
         gene_info = self._get_gene_info_from_window_idx(
             window_idx).query('gene_name==@gene_name')
-
-        return self._get_item_for_gene_in_celltype(mutations, peak_inactivation, track_start, track_end, gene_info, info)
-
-    def get_item_for_tss_in_celltype(self, tss_idx, celltype, track_start=None, track_end=None, mutations=None, peak_inactivation=None):
-        data_key = self.datapool.data_keys[0]
-        info = self._get_window_idx_for_tss_and_celltype(
-            data_key, celltype, tss_idx)
-        window_idx = info['window_idx']
-        gene_name = info['gene_name']
-        gene_info = self._get_gene_info_from_window_idx(
-            window_idx[0]).query('gene_name==@gene_name')
-
+        if gene_info.shape[0] == 0:
+            return None
         return self._get_item_for_gene_in_celltype(mutations, peak_inactivation, track_start, track_end, gene_info, info)
 
     def _get_item_for_gene_in_celltype(self, mutations, peak_inactivation, track_start, track_end, gene_info, info):
@@ -1448,7 +1501,7 @@ class InferenceDataset(PretrainDataset):
         # get the neighboring peaks for the gene
         info, peaks_in_locus, track_start, track_end = self._calculate_peak_bounds_for_gene(
             gene_info, info, track_start, track_end)
-
+        
         # generate sample
         sample = self.datapool.generate_sample(
             chr_name, track_start, track_end, data_key, celltype_id, mutations=mutations, peak_inactivation=peak_inactivation, padding=self.padding)
@@ -1478,21 +1531,20 @@ class InferenceDataset(PretrainDataset):
         chr_name = info['chr_name']
         tss_coord = info['tss_coord']
         gene_name = info['gene_name']
-
         # get peaks in gene locus
         peaks_in_locus = self.get_peaks_around_pos(
             celltype_id, chr_name, tss_coord)
 
         # get the absolute peak positions
-        gene_df, tss_peak = self._get_absolute_tss_peak(
+        gene_df, tss_peak, all_tss_peak = self._get_absolute_tss_peak(
             gene_info, peaks_in_locus, gene_name)
-
+        relative_all_tss_peak = all_tss_peak - tss_peak
         # get the relative peak positions and track bounds if not provided
-        peaks_in_locus, track_start, track_end, tss_peak, peak_start = self._get_relative_coord_and_idx(
+        peaks_in_locus, track_start, track_end, tss_peak, peak_start, original_peak_start = self._get_relative_coord_and_idx(
             peaks_in_locus, track_start, track_end, gene_name, gene_df, tss_peak)
-
+        all_tss_peak = np.unique(relative_all_tss_peak + tss_peak)
         info.update({'track_start': track_start, 'track_end': track_end,
-                     'tss_peak': tss_peak, 'peak_start': peak_start})
+                     'tss_peak': tss_peak, 'all_tss_peak': all_tss_peak, 'peak_start': peak_start, 'original_peak_start': original_peak_start})
         return info, peaks_in_locus, track_start, track_end
 
     def _get_relative_coord_and_idx(self, peaks_in_locus, track_start, track_end, gene_name, gene_df, tss_peak):
@@ -1501,11 +1553,15 @@ class InferenceDataset(PretrainDataset):
         """
         if track_start is None or track_end is None:
             # Get the peak start and end positions based on n_peaks_upper_bound
-            peak_start, peak_end = tss_peak - self.n_peaks_upper_bound // 2, tss_peak - \
-                self.n_peaks_upper_bound // 2 + self.n_peaks_upper_bound
+            peak_start = max(0, tss_peak - self.n_peaks_upper_bound // 2)
+            peak_end = peak_start + self.n_peaks_upper_bound
+            if peak_end > peaks_in_locus.shape[0]:
+                peak_end = peaks_in_locus.shape[0]
+                peak_start = max(0, peak_end - self.n_peaks_upper_bound)
             tss_peak = tss_peak - peak_start
             track_start = peaks_in_locus.iloc[peak_start].Start-self.padding
             track_end = peaks_in_locus.iloc[peak_end-1].End+self.padding
+            original_peak_start = peaks_in_locus.iloc[peak_start].original_peak_index
         else:
             peaks_in_locus_subset = peaks_in_locus.query(
                 'Chromosome==@chr_name').query('Start>=@track_start & End<=@track_end')
@@ -1518,7 +1574,19 @@ class InferenceDataset(PretrainDataset):
                 pr(gene_df)).df['index'].values
             tss_peak = tss_peak - peak_start
             peaks_in_locus = peaks_in_locus_subset
-        return peaks_in_locus, track_start, track_end, tss_peak, peak_start
+            original_peak_start = peaks_in_locus.iloc[peak_start].original_peak_index
+        
+        if isinstance(original_peak_start, pd.Series):
+            original_peak_start = original_peak_start.values[0]
+        if isinstance(peak_start, pd.Series):
+            peak_start = peak_start.values[0]
+        if isinstance(tss_peak, pd.Series):
+            tss_peak = tss_peak.values[0]
+        if isinstance(track_start, pd.Series):
+            track_start = track_start.values[0]
+        if isinstance(track_end, pd.Series):
+            track_end = track_end.values[0]
+        return peaks_in_locus, track_start, track_end, tss_peak, peak_start, original_peak_start
 
     def _get_absolute_tss_peak(self, gene_info, peaks_in_locus, gene_name):
         """
@@ -1528,21 +1596,33 @@ class InferenceDataset(PretrainDataset):
                               'End',  'gene_name', 'Strand', 'chunk_idx']
         if self.additional_peak_columns is not None:
             columns_to_include += self.additional_peak_columns
-        df = pr(peaks_in_locus.copy().reset_index()).join(pr(gene_info.copy().query('gene_name==@gene_name')[['Chromosome', 'Start', 'End', 'gene_name', 'Strand', 'chunk_idx']].drop_duplicates(
+        gene_info_copy = gene_info.copy().query('gene_name==@gene_name')
+        if gene_info_copy.shape[0] == 0:
+            print(
+                f"Gene {gene_name} not found in the gene information, removing and skipping it.")
+        gene_df = pr(peaks_in_locus.copy().reset_index()).join(pr(gene_info_copy[['Chromosome', 'Start', 'End', 'gene_name', 'Strand', 'chunk_idx']].drop_duplicates(
         )).extend(self.PROMOTER_EXTEND), suffix="_gene", how='left', apply_strand_suffix=False).df[columns_to_include].set_index('index')
-        gene_df = df.query('gene_name==@gene_name')
+        gene_df = gene_df.query('gene_name==@gene_name')
         if gene_df.shape[0] == 0:
-            raise ValueError(
-                f"Gene {gene_name} not found in the peak information.")
-        tss_peak = gene_df.index.values[0]
-        return gene_df, tss_peak
+            print(
+                f"Gene {gene_name} not found in the peak information, removing and skipping it.")
+            return
+        elif gene_df.shape[0] > 1:
+            strand = gene_df.Strand.values[0]
+            all_tss_peak = gene_df.index.values
+            tss_peak = all_tss_peak[0] if strand == '+' else all_tss_peak[-1]
+        else:
+            strand = gene_df.Strand.values
+            tss_peak = gene_df.index.values
+            all_tss_peak = [tss_peak]
+        return gene_df, tss_peak, all_tss_peak
 
     def get_peaks_around_pos(self, celltype_id, chr_name, pos):
         """
         Get the peaks around a specific position with a maximum distance of MAX_CONTEXT_DISTANCE.
         """
         return self.datapool._query_peaks(
-            celltype_id, chr_name, pos - self.MAX_CONTEXT_DISTANCE, pos + self.MAX_CONTEXT_DISTANCE).reset_index(drop=True).reset_index()
+            celltype_id, chr_name, pos - self.MAX_CONTEXT_DISTANCE, pos + self.MAX_CONTEXT_DISTANCE).reset_index().rename(columns={'index': 'original_peak_index'}).reset_index()
 
 
 class PerturbationInferenceDataset(Dataset):
@@ -1562,55 +1642,71 @@ class PerturbationInferenceDataset(Dataset):
         super().__init__()
         self.inference_dataset = inference_dataset
         self.perturbations = perturbations
-        self.gene_list = inference_dataset.gene_list
+        self.gene_list = inference_dataset.accessible_genes
         self.gencode_obj = inference_dataset.gencode_obj
         self.mode = mode
         self.calculate_mutation_per_gene()
         print(f"n_celltype: {self.inference_dataset.datapool.n_celltypes}")
         print(f"n_gene: {len(self.gene_list)}")
         print(f"n_perturbation: {len(self.perturbations)}")
+        print(f"overlapping perturbations across cell types: {len(self)}")
 
     def calculate_mutation_per_gene(self):
         """Not all mutations are in the same gene, calculate the number of mutations for each gene as a dictionary"""
-        mutation_per_gene = {}
-        from pyranges import PyRanges as pr
-
-        # extend tss to 4mbp
-        self.perturbations_gene_overlap = pr(self.perturbations).join(pr(self.gencode_obj.gtf).extend(
-            2_000_000)).df.query('gene_name in @self.gene_list').drop(['index', 'Start_b', 'End_b', 'Strand'], axis=1)
+        perturbations_gene_overlap = []
+        for celltype, gene_list in self.gene_list.items():
+            df = pr(self.perturbations).join(pr(self.gencode_obj.gtf).extend(
+            2_000_000)).df.query('gene_name in @gene_list').drop(['index', 'Start_b', 'End_b', 'Strand'], axis=1)
+            df['celltype'] = celltype
+            perturbations_gene_overlap.append(df)
+        self.perturbations_gene_overlap = pd.concat(
+            perturbations_gene_overlap, ignore_index=True)
+        
 
     def __len__(self):
-        return len(self.perturbations_gene_overlap) * self.inference_dataset.datapool.n_celltypes
+        return len(self.perturbations_gene_overlap)
 
-    def __getitem__(self, index):
+    def __getitem__(self, i):
         """return both wild type and mutated batch in a tuple. implement by calling the get_item_for_gene_in_celltype function with or without specify mutation or peak inactivation. loop through the mutations list or peak inactivation list."""
-        celltype_id = index // len(self.perturbations_gene_overlap)
-        perturbation_gene_pair_idx = index % len(
-            self.perturbations_gene_overlap)
-        gene_name = self.perturbations_gene_overlap.gene_name.values[perturbation_gene_pair_idx]
+        celltype = self.perturbations_gene_overlap.celltype.values[i]
+        gene_name = self.perturbations_gene_overlap.gene_name.values[i]
         perturbation = self.perturbations_gene_overlap.iloc[
-            perturbation_gene_pair_idx:perturbation_gene_pair_idx+1]
-        data_key, celltype_id = self.inference_dataset.datapool._get_celltype(
-            celltype_id)
+            i:i+1]
+        data_key = self.inference_dataset.datapool._get_data_key(
+            celltype)
         args = {'mutations': perturbation, 'peak_inactivation': None} if self.mode == 'mutation' else {
             'mutations': None, 'peak_inactivation': perturbation}
-        return {'WT': self.inference_dataset.get_item_for_gene_in_celltype(data_key, celltype_id, gene_name, mutations=None, peak_inactivation=None),
-                'MUT': self.inference_dataset.get_item_for_gene_in_celltype(data_key, celltype_id, gene_name, **args)}
+        return {'WT': self.inference_dataset.get_item_for_gene_in_celltype(data_key, celltype, gene_name, mutations=None, peak_inactivation=None),
+                'MUT': self.inference_dataset.get_item_for_gene_in_celltype(data_key, celltype, gene_name, **args)}
 
 
 @dataclass
 class ReferenceRegionMotifConfig:
-    data: str = '/home/xf2217/Projects/get_data/fetal_union_peak_motif_v1.hg38.zarr'
-    assembly: str = 'hg38'
+    root: str = '/home/xf2217/Projects/get_data'
+    data: str = 'fetal_tfatlas_peaks_motif.hg38.zarr'
+    refdata: str = 'fetal_union_peak_motif_v1.hg38.zarr'
+    motif_scaler: float = 1.0
 
 
 class ReferenceRegionMotif(object):
     def __init__(self, cfg: ReferenceRegionMotifConfig) -> None:
         self.cfg = cfg
-        self.dataset = zarr.open_group(cfg.data, mode='r')
+        self.dataset = zarr.open_group(
+            os.path.join(cfg.root, cfg.data), mode='r')
         self.data = self.dataset['data'][:]
         self.peak_names = self.dataset['peak_names'][:]
         self.motif_names = self.dataset['motif_names'][:]
+        self.refdataset = zarr.open_group(
+            os.path.join(cfg.root, cfg.refdata), mode='r')
+        self.refdata = self.refdataset['data'][:]
+        self.refpeak_names = self.refdataset['peak_names'][:]
+        self.motif_scaler = cfg.motif_scaler
+        # reorder data to match sorted peak order
+        self.data = self.data[self.peaks['index'].values]
+        self.refdata = self.refdata[self.refpeaks['index'].values]
+        # drop 'index' column in peaks
+        self._peaks = self._peaks.drop('index', axis=1).reset_index()
+        self._refpeaks = self._refpeaks.drop('index', axis=1).reset_index()
 
     @property
     def num_peaks(self):
@@ -1622,15 +1718,35 @@ class ReferenceRegionMotif(object):
 
     @property
     def peaks(self):
-        df = pd.DataFrame(self.peak_names[:])
-        # split chr:start-end into chr, start, end
-        df.columns = ['peak_names']
-        df['Chromosome'] = df['peak_names'].apply(lambda x: x.split(':')[0])
-        df['Start'] = df['peak_names'].apply(
-            lambda x: x.split(':')[1].split('-')[0])
-        df['End'] = df['peak_names'].apply(
-            lambda x: x.split(':')[1].split('-')[1])
-        return df.reset_index()
+        if not hasattr(self, '_peaks'):
+            df = pd.DataFrame(self.peak_names[:])
+            # split chr:start-end into chr, start, end
+            df.columns = ['peak_names']
+            df['Chromosome'] = df['peak_names'].apply(
+                lambda x: x.split(':')[0])
+            df['Start'] = df['peak_names'].apply(
+                lambda x: x.split(':')[1].split('-')[0])
+            df['End'] = df['peak_names'].apply(
+                lambda x: x.split(':')[1].split('-')[1])
+            df = pr(df.reset_index()).sort().df
+            self._peaks = df
+        return self._peaks
+
+    @property
+    def refpeaks(self):
+        if not hasattr(self, '_refpeaks'):
+            df = pd.DataFrame(self.refpeak_names[:])
+            # split chr:start-end into chr, start, end
+            df.columns = ['peak_names']
+            df['Chromosome'] = df['peak_names'].apply(
+                lambda x: x.split(':')[0])
+            df['Start'] = df['peak_names'].apply(
+                lambda x: x.split(':')[1].split('-')[0])
+            df['End'] = df['peak_names'].apply(
+                lambda x: x.split(':')[1].split('-')[1])
+            df = pr(df.reset_index()).sort().df
+            self._refpeaks = df
+        return self._refpeaks
 
     @property
     def peak_names_to_index(self):
@@ -1651,17 +1767,27 @@ class ReferenceRegionMotif(object):
         Args:
             peak_names: List of peak names.
         """
+
         if isinstance(peaks, list) or isinstance(peaks, np.ndarray):
             peaks = self.peaks.query('peak_names.isin(@peaks)')
         elif isinstance(peaks, pd.DataFrame) and 'Chromosome' in peaks.columns and 'Start' in peaks.columns and 'End' in peaks.columns:
-            peaks = pr(self.peaks).join(pr(peaks), suffix='_input').df
-        print(peaks)
+            if 'index' not in peaks.columns:
+                peaks = peaks.reset_index()
+            refpeaks = pr(self.refpeaks).join(
+                pr(peaks).sort(), suffix='_input').df
+            peaks = pr(self.peaks).join(pr(peaks).sort(), suffix='_input').df.query(
+                'Start==Start_input & End==End_input').reset_index(drop=True)
+
         peak_indices = peaks['index'].values
         data = self.data[peak_indices]
-        data_cutoff = self.get_cutoff(data)
-        data = data * (data > data_cutoff)
+        refpeak_indices = refpeaks['index'].values
+        refdata = self.refdata[refpeak_indices]
+        refdata_cutoff = self.get_cutoff(refdata)
+        data = data * (data > refdata_cutoff)
+        refdata = refdata * (refdata > refdata_cutoff)
         if normalize:
-            data = data / data.max(0) / 1
+            data = data / refdata.max(0) / self.motif_scaler
+            data[data > 1] = 1
         return data, peaks
 
     def __repr__(self) -> str:
@@ -1672,31 +1798,38 @@ class ReferenceRegionDataset(Dataset):
     def __init__(self, reference_region_motif: ReferenceRegionMotif,
                  zarr_dataset: PretrainDataset,
                  transform=None,
-                 use_natac: bool = True,
-                 sampling_step: int = 900,
+                 quantitative_atac: bool = False,
+                 sampling_step: int = 50,
                  ) -> None:
         super().__init__()
         self.reference_region_motif = reference_region_motif
         self.zarr_dataset = zarr_dataset
         self.transform = transform
-        self.use_natac = use_natac
+        self.quantitative_atac = quantitative_atac
         self.sampling_step = sampling_step
+        self.mask_ratio = zarr_dataset.mask_ratio
         self.is_train = zarr_dataset.is_train
         self.num_region_per_sample = zarr_dataset.n_peaks_upper_bound
         self.leave_out_celltypes = zarr_dataset.leave_out_celltypes
         self.leave_out_chromosomes = zarr_dataset.leave_out_chromosomes
+        self.peak_count_filter = zarr_dataset.peak_count_filter
+
+        self.peak_names = reference_region_motif.peak_names
         self.setup()
 
     @property
     def data_dict(self):
-        return {data_key: self.reference_region_motif.map_peaks_to_motifs(
-            peaks.query('Count>0')
-        ) for data_key, peaks in self.zarr_dataset.datapool.peaks_dict.items()}
+        if not hasattr(self, '_data_dict'):
+            self._data_dict = {data_key: self.reference_region_motif.map_peaks_to_motifs(
+                peaks) for data_key, peaks in self.zarr_dataset.datapool.peaks_dict.items()}
+        return self._data_dict
 
     def extract_data_list(self, region_motif, peaks):
+        region_motif_list = []
         peak_list = []
         target_list = []
         tssidx_list = []
+        hic_matrix_list = []
 
         all_chromosomes = peaks["Chromosome"].unique(
         ).tolist()
@@ -1707,7 +1840,8 @@ class ReferenceRegionDataset(Dataset):
                              "Expression_negative"]].values
         tssidx_data = peaks["TSS"].values
         atpm = peaks['aTPM'].values
-        if self.use_natac:
+        target_data[atpm < 0.05, :] = 0
+        if not self.quantitative_atac:
             region_motif = np.concatenate(
                 [region_motif, np.zeros((region_motif.shape[0], 1))+1], axis=1)
         else:
@@ -1723,51 +1857,297 @@ class ReferenceRegionDataset(Dataset):
                 start_index = max(0, i + shift)
                 end_index = start_index + self.num_region_per_sample
 
-                celltype_annot_i = peaks.iloc[start_index:end_index, :]
-                if celltype_annot_i.iloc[-1].End - celltype_annot_i.iloc[0].Start > 5000000:
-                    end_index = celltype_annot_i[celltype_annot_i.End -
-                                                 celltype_annot_i.Start < 5000000].index[-1]
-                if celltype_annot_i["Start"].min() < 0:
+                celltype_peak_annot_i = peaks.iloc[start_index:end_index, :]
+                if celltype_peak_annot_i.shape[0] == 0:
                     continue
-                peak_data_i = coo_matrix(region_motif[start_index:end_index])
+                if celltype_peak_annot_i.iloc[-1].End - celltype_peak_annot_i.iloc[0].Start > 5000000:
+                    end_index = celltype_peak_annot_i[celltype_peak_annot_i.End -
+                                                      celltype_peak_annot_i.Start < 5000000].index[-1]
+                if celltype_peak_annot_i["Start"].min() < 0 or celltype_peak_annot_i.shape[0] != self.num_region_per_sample:
+                    continue
+
+                region_motif_i = coo_matrix(
+                    region_motif[start_index:end_index])
 
                 target_i = coo_matrix(
                     target_data[start_index:end_index])
                 tssidx_i = tssidx_data[start_index:end_index]
 
-                if peak_data_i.shape[0] == self.num_region_per_sample:
-                    peak_list.append(peak_data_i)
+                if region_motif_i.shape[0] == self.num_region_per_sample:
+
+                    # get hic matrix for celltype_peak_annot_i
+                    if self.zarr_dataset.datapool.hic_obj is not None:
+                        hic_matrix_i = get_hic_from_idx(
+                            self.zarr_dataset.datapool.hic_obj, celltype_peak_annot_i)
+                        if hic_matrix_i is None:
+                            continue
+                        else:
+                            hic_matrix_list.append(hic_matrix_i)
+                    else:
+                        hic_matrix_list.append(0)
+
+                    region_motif_list.append(region_motif_i)
+                    peak_list.append(celltype_peak_annot_i)
                     target_list.append(target_i)
                     tssidx_list.append(tssidx_i)
-        return peak_list, target_list, tssidx_list
+        return peak_list, region_motif_list, target_list, tssidx_list, hic_matrix_list
 
     def setup(self):
         self.peaks = []
+        self.region_motif = []
         self.targets = []
         self.tssidxs = []
+        self.hic_matrices = []
 
         for data_key, (region_motif, peaks) in tqdm(self.data_dict.items()):
-            peak_list_i, target_list_i, tssidx_list_i = self.extract_data_list(
+            peak_list_i, region_motif_list_i, target_list_i, tssidx_list_i, hic_matrix_list_i = self.extract_data_list(
                 region_motif, peaks)
             self.peaks.extend(peak_list_i)
+            self.region_motif.extend(region_motif_list_i)
             self.targets.extend(target_list_i)
             self.tssidxs.extend(tssidx_list_i)
+            self.hic_matrices.extend(hic_matrix_list_i)
 
     def __len__(self):
-        return len(self.peaks)
+        return len(self.region_motif)
 
     def __getitem__(self, index):
+        region_motif = self.region_motif[index]
         peak = self.peaks[index]
         target = self.targets[index]
         tssidx = self.tssidxs[index]
-        mask = tssidx
+        hic_matrix = self.hic_matrices[index]
+        if self.mask_ratio > 0:
+            mask = np.hstack(
+                [
+                    np.zeros(int(self.num_region_per_sample -
+                                 self.num_region_per_sample*self.mask_ratio)),
+                    np.ones(int(self.num_region_per_sample*self.mask_ratio)),
+                ]
+            )
+            np.random.shuffle(mask)
+        else:
+            mask = tssidx
         if self.transform is not None:
-            peak, mask, target = self.transform(peak, tssidx, target)
-        if peak.shape[0] == 1:
-            peak = peak.squeeze(0)
-        return {'region_motif': peak.toarray().astype(np.float32),
+            region_motif, mask, target = self.transform(region_motif, tssidx, target)
+        if region_motif.shape[0] == 1:
+            region_motif = region_motif.squeeze(0)
+        return {'region_motif': region_motif.toarray().astype(np.float32),
                 'mask': mask,
-                'exp_label': target.toarray().astype(np.float32)}
+                'chromosome': peak['Chromosome'].values[0],
+                'peak': peak[['Start', 'End']].values,
+                'exp_label': target.toarray().astype(np.float32),
+                'hic_matrix': hic_matrix}
+
+
+class InferenceReferenceRegionDataset(Dataset):
+    def __init__(self, reference_region_motif: ReferenceRegionMotif,
+                 zarr_dataset: InferenceDataset,
+                 quantitative_atac: bool = False,
+                 sampling_step: int = 50,
+                 ) -> None:
+        super().__init__()
+
+        self.mask_ratio = zarr_dataset.mask_ratio
+        self.is_train = zarr_dataset.is_train
+        self.num_region_per_sample = zarr_dataset.n_peaks_upper_bound
+        self.leave_out_celltypes = zarr_dataset.leave_out_celltypes
+        self.leave_out_chromosomes = zarr_dataset.leave_out_chromosomes
+        self.quantitative_atac = quantitative_atac
+        self.reference_region_motif = reference_region_motif
+        self.peak_count_filter = zarr_dataset.peak_count_filter
+        self.peak_names = reference_region_motif.peak_names
+
+        self.zarr_dataset = zarr_dataset
+
+    @property
+    def data_dict(self):
+        if not hasattr(self, '_data_dict'):
+            self._data_dict = {data_key: self.reference_region_motif.map_peaks_to_motifs(
+                peaks) for data_key, peaks in self.zarr_dataset.datapool.peaks_dict.items()}
+        return self._data_dict
+
+    def __len__(self):
+        return len(self.zarr_dataset)
+
+    def __getitem__(self, index):
+        sample = self.zarr_dataset[index]
+        target = sample['additional_peak_features'][:, 0:2]
+        tssidx = sample['additional_peak_features'][:, 3]
+        hic_matrix = sample['hic_matrix']
+        mask = tssidx
+        peak_start = sample['metadata']['original_peak_start']
+        celltype_id = sample['metadata']['celltype_id']
+        strand = sample['metadata']['strand']
+        gene_name = sample['metadata']['gene_name']
+        peak_end = peak_start + target.shape[0]
+        region_motif, peaks = self.data_dict[celltype_id]
+        region_motif = region_motif[peak_start:peak_end]
+        chromosome = peaks['Chromosome'].values[peak_start]
+        peaks_coord = peaks[['Start', 'End']].values[peak_start:peak_end]
+        atpm = peaks['aTPM'].values[peak_start:peak_end]
+        # append binary or quantitative atac signal
+        if not self.quantitative_atac:
+            region_motif = np.concatenate(
+                [region_motif, np.zeros((region_motif.shape[0], 1))+1], axis=1)
+        else:
+            region_motif = np.concatenate(
+                [region_motif, atpm.reshape(-1, 1)/atpm.reshape(-1, 1).max()], axis=1)
+
+        return {'region_motif': region_motif.astype(np.float32),
+                'chromosome': chromosome,
+                'peak_coord': peaks_coord,
+                'mask': mask,
+                'exp_label': target.astype(np.float32),
+                'hic_matrix': hic_matrix,
+                'strand': strand,
+                'gene_name': gene_name,
+                'tss_peak': sample['metadata']['tss_peak'],
+                'all_tss_peak': sample['metadata']['all_tss_peak']}
+
+
+class PerturbationInferenceReferenceRegionDataset(Dataset):
+    """
+    Wrapper around InferenceReferenceRegionDataset to allow for parallel processing for different mutations.
+
+    Args:
+        inference_dataset (InferenceReferenceRegionDataset): The InferenceReferenceRegionDataset to use for generating samples.
+        perturbations (pandas.DataFrame): A pandas DataFrame containing the perturbations to apply.
+        mode (str): The mode of perturbation to apply. Can be 'mutation' or 'peak_inactivation'.
+    """
+
+    def __init__(self, inference_dataset, perturbations, mode='mutation') -> None:
+        super().__init__()
+        self.inference_dataset = inference_dataset
+        self.perturbations = perturbations
+        self.gene_list = inference_dataset.zarr_dataset.accessible_genes #{celltype_id: gene_list_for_celltype}
+        self.gencode_obj = inference_dataset.zarr_dataset.gencode_obj
+        self.mode = mode
+        self._calculate_mutation_per_gene()
+        print(
+            f"n_celltype: {self.inference_dataset.zarr_dataset.datapool.n_celltypes}")
+        print(f"n_gene: {len(self.gene_list)}")
+        print(f"n_perturbation: {len(self.perturbations)}")
+
+    def _calculate_mutation_per_gene(self):
+        """Not all mutations are in the same gene, calculate the number of mutations for each gene as a dictionary"""
+        from pyranges import PyRanges as pr
+        if 'gene_name' not in self.perturbations.columns:
+            perturbations_gene_overlap = []
+            for celltype, gene_list in self.gene_list.items():
+                # Extend TSS to 4mbp
+                celltype_perturbation = pr(self.perturbations).join(
+                    pr(self.gencode_obj.gtf).extend(2_000_000)
+                ).df.query('gene_name in @gene_list').drop(
+                    ['index', 'Start_b', 'End_b', 'Strand'], axis=1
+                )
+                celltype_perturbation['celltype'] = celltype
+                perturbations_gene_overlap.append(celltype_perturbation)
+
+            self.perturbations_gene_overlap = pd.concat(
+                perturbations_gene_overlap)
+            # if empty, raise error
+            if self.perturbations_gene_overlap.shape[0] == 0:
+                raise ValueError(
+                    "No perturbations found in the gene list, please check the gene list and perturbations."
+                )
+        else:
+            perturbations_gene_overlap = []
+            for celltype, gene_list in self.gene_list.items():
+                celltype_perturbation = self.perturbations.query('gene_name in @gene_list') 
+                celltype_perturbation['celltype'] = celltype
+                perturbations_gene_overlap.append(celltype_perturbation)
+
+            self.perturbations_gene_overlap = pd.concat(perturbations_gene_overlap)
+            if self.perturbations_gene_overlap.shape[0] == 0:
+                raise ValueError(
+                    "No perturbations found in the gene list, please check the gene list and perturbations."
+                )
+
+    def __len__(self):
+        return len(self.perturbations_gene_overlap)
+
+    def __getitem__(self, i):
+        celltype = self.perturbations_gene_overlap.celltype.values[i]
+        gene_name = self.perturbations_gene_overlap.gene_name.values[i]
+        perturbation = self.perturbations_gene_overlap.iloc[
+            i:i + 1
+        ]
+        data_key = self.inference_dataset.zarr_dataset.datapool._get_data_key(
+            celltype)
+
+        wt_sample = self._get_sample(data_key, celltype, gene_name)
+        mut_sample = self._get_sample(
+            data_key, celltype, gene_name, perturbation)
+
+        return {'WT': wt_sample, 'MUT': mut_sample}
+
+    def _get_sample(self, data_key, celltype_id, gene_name, perturbation=None):
+        sample = self.inference_dataset.zarr_dataset.get_item_for_gene_in_celltype(
+            data_key, celltype_id, gene_name,
+            mutations=perturbation if self.mode == 'mutation' else None,
+            peak_inactivation=perturbation if self.mode == 'peak_inactivation' else None
+        )
+        target = sample['additional_peak_features'][:, 0:2]
+        tssidx = sample['additional_peak_features'][:, 3]
+        hic_matrix = sample['hic_matrix']
+        mask = tssidx
+
+        peak_start = sample['metadata']['original_peak_start']
+        peak_end = peak_start + target.shape[0]
+
+        region_motif = self.inference_dataset.data_dict[celltype_id][0][peak_start:peak_end]
+        peaks = self.inference_dataset.data_dict[celltype_id][1][peak_start:peak_end]
+        atpm = peaks['aTPM'].values
+
+        if self.mode == 'peak_inactivation' and perturbation is not None:
+            region_motif, atpm = self._apply_peak_inactivation(
+                region_motif, perturbation, peaks, atpm)
+
+        if not self.inference_dataset.quantitative_atac:
+            region_motif = np.concatenate(
+                [region_motif, np.zeros((region_motif.shape[0], 1)) + 1], axis=1
+            )
+        else:
+            region_motif = np.concatenate(
+                [region_motif, atpm.reshape(-1, 1) / atpm.reshape(-1, 1).max()], axis=1
+            )
+
+
+
+        return {
+            'region_motif': region_motif.astype(np.float32),
+            'mask': mask,
+            'exp_label': target.astype(np.float32),
+            'hic_matrix': hic_matrix,
+            'perturb_chrom': perturbation.Chromosome.values[0] if perturbation is not None else 0,
+            'perturb_start': perturbation.Start.values[0] if perturbation is not None else 0,
+            'perturb_end': perturbation.End.values[0] if perturbation is not None else 0,
+            'strand': sample['metadata']['strand'],
+            'gene_name': sample['metadata']['gene_name'],
+            'tss_peak': sample['metadata']['tss_peak'],
+            'all_tss_peak': sample['metadata']['all_tss_peak']
+        }
+
+    def _apply_peak_inactivation(self, region_motif, perturbation, peaks, atpm):
+        """Apply peak inactivation by setting the corresponding peak/region in region_motif to 0."""
+        perturbed_region_motif = region_motif.copy()
+        peaks_df = pr(peaks[['Chromosome', 'Start', 'End']].reset_index(drop=True).reset_index())
+        perturbation_df = pr(perturbation)
+
+        overlap = peaks_df.join(perturbation_df, suffix='_perturb').df
+        try:
+            overlap_indices = overlap['index'].values
+            overlap_indices = overlap_indices[overlap_indices <
+                                              region_motif.shape[0]]
+            overlap_indices = overlap_indices[overlap_indices > 0]
+            perturbed_region_motif[overlap_indices] = 0
+            atpm[overlap_indices] = 0
+            return perturbed_region_motif, atpm
+        except:
+            logging.warning(
+                f"Failed to apply peak inactivation for {perturbation}, no overlapping peaks found.")
+            return region_motif, atpm
 
 
 class RegionDataset(Dataset):
@@ -1799,8 +2179,9 @@ class RegionDataset(Dataset):
         is_train: bool = True,
         leave_out_celltypes: str = "",
         leave_out_chromosomes: str = "",
-        use_natac: bool = True,
+        quantitative_atac: bool = False,
         sampling_step: int = 100,
+        mask_ratio: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -1809,9 +2190,10 @@ class RegionDataset(Dataset):
         self.is_train = is_train
         self.leave_out_celltypes = leave_out_celltypes
         self.leave_out_chromosomes = leave_out_chromosomes
-        self.use_natac = use_natac
+        self.quantitative_atac = quantitative_atac
         self.sampling_step = sampling_step
-
+        self.num_region_per_sample = num_region_per_sample
+        self.mask_ratio = mask_ratio
         metadata_path = os.path.join(
             self.root, metadata_path
         )
@@ -1823,7 +2205,7 @@ class RegionDataset(Dataset):
             num_region_per_sample,
             leave_out_celltypes,
             leave_out_chromosomes,
-            use_natac,
+            quantitative_atac,
             is_train,
             sampling_step,
         )
@@ -1840,7 +2222,7 @@ class RegionDataset(Dataset):
 Total {'train' if self.is_train else 'test'} samples: {len(self.peaks)}
 Leave out celltypes: {self.leave_out_celltypes}
 Leave out chromosomes: {self.leave_out_chromosomes}
-Use natac: {self.use_natac}
+Use quantitative_atac: {self.quantitative_atac}
 Sampling step: {self.sampling_step}
         """
 
@@ -1857,7 +2239,17 @@ Sampling step: {self.sampling_step}
         peak = self.peaks[index]
         target = self.targets[index]
         tssidx = self.tssidxs[index]
-        mask = tssidx
+        if self.mask_ratio > 0:
+            mask = np.hstack(
+                [
+                    np.zeros(int(self.num_region_per_sample -
+                                 self.num_region_per_sample*self.mask_ratio)),
+                    np.ones(int(self.num_region_per_sample*self.mask_ratio)),
+                ]
+            )
+            np.random.shuffle(mask)
+        else:
+            mask = tssidx
         if self.transform is not None:
             peak, mask, target = self.transform(peak, tssidx, target)
         if peak.shape[0] == 1:
@@ -1902,10 +2294,19 @@ Sampling step: {self.sampling_step}
 
         celltype_list = sorted(celltype_metadata["celltype"].unique().tolist())
         if is_train:
-            celltype_list = [
-                cell for cell in celltype_list if cell not in leave_out_celltypes]
-            print(f"Train cell types list: {celltype_list}")
-            print(f"Train data types list: {datatypes}")
+            # TODO: revert this
+            # celltype_list = [
+            #     cell for cell in celltype_list if cell not in leave_out_celltypes]
+            # print(f"Train cell types list: {celltype_list}")
+            # print(f"Train data types list: {datatypes}")
+
+            celltype_list = leave_out_celltypes if leave_out_celltypes != [
+                ""] else celltype_list
+            print(
+                f"Using validation cell type for training!!! cell types list: {celltype_list}")
+            print(
+                f"Using validation cell type for training!!! data types list: {datatypes}")
+
         else:
             celltype_list = leave_out_celltypes if leave_out_celltypes != [
                 ""] else celltype_list
@@ -1915,7 +2316,6 @@ Sampling step: {self.sampling_step}
         file_id_list = []
         datatype_dict = {}
         cell_dict = {}
-
         for cell in celltype_list:
             celltype_metadata_of_cell = celltype_metadata[celltype_metadata["celltype"] == cell]
             for file, cluster, datatype, expression in zip(
@@ -1940,8 +2340,7 @@ Sampling step: {self.sampling_step}
         return file_id_list, cell_dict, datatype_dict
 
     @staticmethod
-    @staticmethod
-    def _generate_paths(file_id: int, data_path: str, data_type: str, use_natac: bool = True) -> dict:
+    def _generate_paths(file_id: int, data_path: str, data_type: str, quantitative_atac: bool = False) -> dict:
         """
         Generate a dictionary of paths based on the given parameters.
 
@@ -1949,7 +2348,7 @@ Sampling step: {self.sampling_step}
             file_id (int): File ID.
             data_path (str): Path to the data directory.
             data_type (str): Data type.
-            use_natac (bool, optional): Specify if natac files should be used. Defaults to True.
+            quantitative_atac (bool, optional): Specify if quantitative atac files should be used. Defaults to False.
 
         Returns:
             dict: Dictionary of paths with file IDs as keys and corresponding paths as values.
@@ -1958,7 +2357,7 @@ Sampling step: {self.sampling_step}
             FileNotFoundError: If the peak file is not found.
         """
         peak_npz_path = os.path.join(
-            data_path, data_type, f"{file_id}.{'natac' if use_natac else 'watac'}.npz"
+            data_path, data_type, f"{file_id}.watac.npz"
         )
 
         if not os.path.exists(peak_npz_path):
@@ -1969,14 +2368,21 @@ Sampling step: {self.sampling_step}
         tssidx_npy_path = os.path.join(
             data_path, data_type, f"{file_id}.tss.npy")
         celltype_annot = os.path.join(
-            data_path, data_type, f"{file_id}.csv.gz")
-
+            data_path, data_type, f"{file_id}.csv")
+        # if celltype_annot is not exist, check csv.gz
+        if not os.path.exists(celltype_annot):
+            celltype_annot = os.path.join(
+                data_path, data_type, f"{file_id}.csv.gz")
+        exp_feather = os.path.join(
+            data_path, data_type, f"{file_id}.exp.feather"
+        )
         return {
             "file_id": file_id,
             "peak_npz": peak_npz_path,
             "target_npy": target_npy_path,
             "tssidx_npy": tssidx_npy_path,
             "celltype_annot_csv": celltype_annot,
+            "exp_feather": exp_feather,
         }
 
     def _make_dataset(
@@ -1988,7 +2394,7 @@ Sampling step: {self.sampling_step}
         num_region_per_sample: int,
         leave_out_celltypes: str,
         leave_out_chromosomes: str,
-        use_natac: bool,
+        quantitative_atac: bool,
         is_train: bool,
         step: int = 200,
     ) -> Tuple[List[coo_matrix], List[coo_matrix], List[np.ndarray]]:
@@ -2003,7 +2409,7 @@ Sampling step: {self.sampling_step}
             num_region_per_sample (int): Number of regions per sample.
             leave_out_celltypes (str): String of comma-separated cell types to leave out.
             leave_out_chromosomes (str): String of comma-separated chromosomes to leave out.
-            use_natac (bool): Whether to use peak data with no ATAC count values.
+            quantitative_atac (bool): Whether to use peak data with no ATAC count values.
             is_train (bool): Whether it is a training dataset.
             step (int, optional): Step size for generating samples. Defaults to 200.
 
@@ -2030,7 +2436,7 @@ Sampling step: {self.sampling_step}
             data_type = datatype_dict[file_id]
             print(file_id, data_path, data_type)
             paths_dict = self._generate_paths(
-                file_id, data_path, data_type, use_natac=use_natac
+                file_id, data_path, data_type, quantitative_atac=quantitative_atac
             )
 
             celltype_peak_annot = pd.read_csv(
@@ -2047,6 +2453,12 @@ Sampling step: {self.sampling_step}
                 target_data = np.load(paths_dict["target_npy"])
                 tssidx_data = np.load(paths_dict["tssidx_npy"])
                 print(f"Target shape: {target_data.shape}")
+                atac_cutoff = 1 - \
+                    (peak_data[:, 282] >= 0.05).toarray().flatten()
+                target_data[atac_cutoff, :] = 0
+
+            if quantitative_atac is False:
+                peak_data[:, 282] = 1
 
             all_chromosomes = celltype_peak_annot["Chromosome"].unique(
             ).tolist()
@@ -2059,16 +2471,17 @@ Sampling step: {self.sampling_step}
                 )
                 idx_peak_start = idx_peak_list[0]
                 idx_peak_end = idx_peak_list[-1]
-                print(idx_peak_end)
                 for i in range(idx_peak_start, idx_peak_end, step):
-                    shift = np.random.randint(-step // 2, step // 2)
-                    start_index = max(0, i + shift)
+                    # shift = np.random.randint(-step // 2, step // 2)
+                    start_index = i  # max(0, i + shift)
                     end_index = start_index + num_region_per_sample
 
                     celltype_annot_i = celltype_peak_annot.iloc[start_index:end_index, :]
-                    if celltype_annot_i.iloc[-1].End - celltype_annot_i.iloc[0].Start > 5000000:
-                        end_index = celltype_annot_i[celltype_annot_i.End -
-                                                     celltype_annot_i.Start < 5000000].index[-1]
+                    if celltype_annot_i.shape[0] < num_region_per_sample:
+                        continue
+                    # if celltype_annot_i.iloc[-1].End - celltype_annot_i.iloc[0].Start > 5000000:
+                    #     end_index = celltype_annot_i[celltype_annot_i.End -
+                    #                                  celltype_annot_i.Start < 5000000].index[-1]
                     if celltype_annot_i["Start"].min() < 0:
                         continue
                     peak_data_i = coo_matrix(peak_data[start_index:end_index])
@@ -2086,3 +2499,251 @@ Sampling step: {self.sampling_step}
                             tssidx_list.append(tssidx_i)
 
         return peak_list, target_list, tssidx_list
+
+
+class InferenceRegionDataset(RegionDataset):
+    """Same as RegionDataset but load the exp.feather to get gene index in peaks
+
+    Args:
+        root (str): Root directory path.
+        metadata_path (str): Path to the metadata file.
+        num_region_per_sample (int): Number of regions for each sample.
+        transform (Optional[Callable], optional): Transform function. Defaults to None.
+        data_type (str, optional): Data type. Defaults to "fetal".
+        is_train (bool, optional): Specify if the dataset is for training. Defaults to True.
+        leave_out_celltypes (str, optional): Comma-separated string of cell types to leave out. Defaults to "".
+        leave_out_chromosomes (str, optional): Comma-separated string of chromosomes to leave out. Defaults to "".
+        quantitative_atac (bool, optional): Specify if quantitative ATAC data should be used. Defaults to False.
+        sampling_step (int, optional): Sampling step. Defaults to 100.
+        mask_ratio (float, optional): Mask ratio. Defaults to 0.0.
+        gene_list ([type], optional): Gene list. Defaults to None.
+        gencode_obj ([type], optional): Gencode object. Defaults to None.
+    """
+
+    def __init__(
+        self,
+        root: str,
+        metadata_path: str,
+        num_region_per_sample: int,
+        transform: Optional[Callable] = None,
+        data_type: str = "fetal",
+        is_train: bool = True,
+        leave_out_celltypes: str = "",
+        leave_out_chromosomes: str = "",
+        quantitative_atac: bool = False,
+        sampling_step: int = 100,
+        mask_ratio: float = 0.0,
+        gene_list=None,
+        gencode_obj=None,
+
+    ) -> None:
+        self.root = root
+        self.transform = transform
+        self.is_train = is_train
+        self.leave_out_celltypes = leave_out_celltypes
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.quantitative_atac = quantitative_atac
+        self.sampling_step = sampling_step
+        self.num_region_per_sample = num_region_per_sample
+        self.mask_ratio = mask_ratio
+        metadata_path = os.path.join(
+            self.root, metadata_path
+        )
+        if isinstance(gene_list, str):
+            if ',' in gene_list:
+                gene_list = gene_list.split(',')
+            elif os.path.exists(gene_list):
+                gene_list = np.loadtxt(gene_list, dtype=str)
+        self.gene_list = gene_list if gene_list is not None else []
+        self.gencode_obj = gencode_obj
+        peaks, targets, tssidx, gene_names, strands, tss_peaks = self._make_dataset(
+            False,
+            data_type,
+            self.root,
+            metadata_path,
+            num_region_per_sample,
+            leave_out_celltypes,
+            leave_out_chromosomes,
+            quantitative_atac,
+            is_train,
+            sampling_step,
+        )
+
+        if len(peaks) == 0:
+            raise RuntimeError(f"Found 0 files in subfolders of: {self.root}")
+
+        self.peaks = peaks
+        self.targets = targets
+        self.tssidxs = np.array(tssidx)
+        self.gene_names = gene_names
+        self.strands = strands
+        self.tss_peaks = tss_peaks
+
+    def _make_dataset(
+        self,
+        is_pretrain: bool,
+        datatypes: str,
+        data_path: str,
+        celltype_metadata_path: str,
+        num_region_per_sample: int,
+        leave_out_celltypes: str,
+        leave_out_chromosomes: str,
+        quantitative_atac: bool,
+        is_train: bool,
+        step: int = 200,
+    ) -> Tuple[List[coo_matrix], List[coo_matrix], List[np.ndarray]]:
+        """
+        Generate a dataset for training or testing.
+
+        Args:
+            is_pretrain (bool): Whether it is a pretraining dataset.
+            datatypes (str): String of comma-separated data types.
+            data_path (str): Path to the data.
+            celltype_metadata_path (str): Path to the celltype metadata file.
+            num_region_per_sample (int): Number of regions per sample.
+            leave_out_celltypes (str): String of comma-separated cell types to leave out.
+            leave_out_chromosomes (str): String of comma-separated chromosomes to leave out.
+            quantitative_atac (bool): Whether to use peak data with no ATAC count values.
+            is_train (bool): Whether it is a training dataset.
+            step (int, optional): Step size for generating samples. Defaults to 200.
+
+        Returns:
+            Tuple[List[coo_matrix], List[str], List[coo_matrix], List[np.ndarray]]: Tuple containing the generated peak data,
+            cell labels, target data, and TSS indices.
+        """
+        celltype_metadata = pd.read_csv(
+            celltype_metadata_path, sep=",", dtype=str)
+        file_id_list, cell_dict, datatype_dict = self._cell_splitter(
+            celltype_metadata,
+            leave_out_celltypes,
+            datatypes,
+            is_train=is_train,
+            is_pretrain=is_pretrain,
+        )
+        peak_list = []
+        cell_list = []
+        target_list = [] if not is_pretrain else None
+        tssidx_list = [] if not is_pretrain else None
+        gene_list = []
+        strand_list = []
+        tss_peak_list = []
+        for file_id in file_id_list:
+            cell_label = cell_dict[file_id]
+            data_type = datatype_dict[file_id]
+            print(file_id, data_path, data_type)
+            paths_dict = self._generate_paths(
+                file_id, data_path, data_type, quantitative_atac=quantitative_atac
+            )
+
+            celltype_peak_annot = pd.read_csv(
+                paths_dict["celltype_annot_csv"], sep=",")
+
+            try:
+                peak_data = load_npz(paths_dict["peak_npz"])
+                print(f"Feature shape: {peak_data.shape}")
+            except FileNotFoundError:
+                print(f"File not found - FILE ID: {file_id}")
+                continue
+
+            if os.path.exists(paths_dict["exp_feather"]):
+                exp_df = pd.read_feather(paths_dict["exp_feather"])
+            else:
+                # construct exp_df from gencode_obj and save it to feather
+                exp_df = self.gencode_obj.get_exp_feather(
+                    celltype_peak_annot.drop('index', axis=1).reset_index())
+                exp_df.to_feather(paths_dict["exp_feather"])
+
+            if not is_pretrain:
+                target_data = np.load(paths_dict["target_npy"])
+                tssidx_data = np.load(paths_dict["tssidx_npy"])
+                print(f"Target shape: {target_data.shape}")
+                atac_cutoff = 1 - \
+                    (peak_data[:, 282] >= 0.05).toarray().flatten()
+                target_data[atac_cutoff, :] = 0
+
+            if quantitative_atac is False:
+                peak_data[:, 282] = 1
+
+            all_chromosomes = celltype_peak_annot["Chromosome"].unique(
+            ).tolist()
+            input_chromosomes = _chromosome_splitter(
+                all_chromosomes, leave_out_chromosomes, is_train=is_train
+            )
+
+            exp_df = exp_df.query(
+                'gene_name.isin(@self.gene_list) & Chromosome.isin(@input_chromosomes)')
+
+            # instead of loop over chromosome, loop over gene
+            for gene, gene_df in exp_df.groupby('gene_name'):
+                gene_name = gene_df['gene_name'].values[0]
+                tss_peak = gene_df['index'].values
+                strand = 0 if gene_df['Strand'].values[0] == '+' else 1
+                idx = gene_df['index'].values[0] if strand == 0 else gene_df['index'].values[-1]
+
+                start_idx = idx-num_region_per_sample//2
+                end_idx = idx+num_region_per_sample//2
+                if start_idx < 0 or end_idx >= peak_data.shape[0]:
+                    continue
+                celltype_annot_i = celltype_peak_annot.iloc[start_idx:end_idx, :]
+                if celltype_annot_i.shape[0] < num_region_per_sample:
+                    continue
+                peak_data_i = coo_matrix(peak_data[start_idx:end_idx])
+
+                if not is_pretrain:
+                    target_i = coo_matrix(
+                        target_data[start_idx:end_idx])
+                    tssidx_i = tssidx_data[start_idx:end_idx]
+
+                if peak_data_i.shape[0] == num_region_per_sample:
+                    peak_list.append(peak_data_i)
+                    cell_list.append(cell_label)
+                    if not is_pretrain:
+                        target_list.append(target_i)
+                        tssidx_list.append(tssidx_i)
+                    gene_list.append(gene_name)
+                    strand_list.append(strand)
+                    tss_peak = tss_peak-start_idx
+                    tss_peak = tss_peak[tss_peak < num_region_per_sample]
+                    tss_peak_list.append(tss_peak)
+
+        return peak_list, target_list, tssidx_list, gene_list, strand_list, tss_peak_list
+
+    def __getitem__(self, index: int):
+        """
+        Get an item from the dataset.
+
+        Args:
+            index (int): Index of the item.
+
+        Returns:
+            Tuple[coo_matrix, np.ndarray, np.ndarray]: Tuple containing peak data, mask, and target data.
+        """
+        peak = self.peaks[index]
+        target = self.targets[index]
+        tssidx = self.tssidxs[index]
+        gene_name = self.gene_names[index]
+        strand = self.strands[index]
+        tss_peak = self.tss_peaks[index]
+        tss_peak_mask = np.zeros(self.num_region_per_sample)
+        tss_peak_mask[tss_peak] = 1
+        if self.mask_ratio > 0:
+            mask = np.hstack(
+                [
+                    np.zeros(int(self.num_region_per_sample -
+                                 self.num_region_per_sample*self.mask_ratio)),
+                    np.ones(int(self.num_region_per_sample*self.mask_ratio)),
+                ]
+            )
+            np.random.shuffle(mask)
+        else:
+            mask = tssidx
+        if self.transform is not None:
+            peak, mask, target = self.transform(peak, tssidx, target)
+        if peak.shape[0] == 1:
+            peak = peak.squeeze(0)
+        return {'region_motif': peak.toarray().astype(np.float32),
+                'mask': mask,
+                'gene_name': gene_name,
+                'tss_peak': tss_peak_mask,
+                'strand': strand,
+                'exp_label': target.toarray().astype(np.float32)}
