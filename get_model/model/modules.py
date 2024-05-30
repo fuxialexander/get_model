@@ -292,6 +292,26 @@ class ATACHead(BaseModule):
         return x
 
 
+class ATACHead(BaseModule):
+    """ATAC head"""
+
+    def __init__(self, cfg: ATACHeadConfig):
+        super().__init__(cfg)
+        self.fc1 = nn.Linear(cfg.embed_dim, cfg.hidden_dim)
+        self.fc2 = nn.Linear(cfg.hidden_dim, cfg.output_dim)
+        self.act = nn.GELU()
+        self.drop1 = nn.Dropout(cfg.drop)
+        self.drop2 = nn.Dropout(cfg.drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop1(x)
+        x = self.fc2(x)
+        x = self.drop2(x)
+        return x
+
+
 class OuterProductMean(nn.Module):
     """
     Implements a simplified version of the OuterProductMean.

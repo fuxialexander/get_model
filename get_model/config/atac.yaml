@@ -9,8 +9,8 @@ defaults:
 task:
   layer_names: []
   test_mode: "perturb"
-  gene_list: 
-    - "PPIF"
+  gene_list: ""
+    # - "PPIF"
   # mutations: null
   mutations: "/burg/pmg/users/xf2217/get_revision/PPIF/prepared_data.tsv"
 
