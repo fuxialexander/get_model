@@ -1,5 +1,5 @@
 # Set the root directory where the project will be set up
-USER=$1
+USER=hvl2108
 ROOT_DIR=/pmglocal/${USER}/GET_STARTED
 DATA_DIR=/burg/pmg/users/xf2217/get_data
 
