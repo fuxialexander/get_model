@@ -1,0 +1,23 @@
+zarr_dirs:
+  - "encode_hg38atac_dense.zarr"
+keep_celltypes: null
+leave_out_celltypes: 'THP1'
+leave_out_chromosomes: "chr10,chr11"
+peak_name: "peaks_p0.01_tissue_open_exp"
+dataset_size: 40960
+eval_dataset_size: 512
+additional_peak_columns: ['aTPM']
+center_expand_target: 200
+n_peaks_lower_bound: 1
+n_peaks_upper_bound: 10
+negative_peak_name: null
+negative_peak_ratio: 0
+random_shift_peak: 0
+max_peak_length: 5000
+use_insulation: False
+preload_count: 10
+pin_mem: True
+n_packs: 1
+padding: 0
+mask_ratio: 0.5
+insulation_subsample_ratio: 1
