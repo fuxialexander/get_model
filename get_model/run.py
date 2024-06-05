@@ -112,7 +112,7 @@ class LitModel(L.LightningModule):
                         checkpoint_model)
                     model.load_state_dict(checkpoint_model, strict=strict)
         model.freeze_layers(
-            patterns_to_freeze=self.cfg.finetune.patterns_to_freeze, invert_match=False)
+          patterns_to_freeze=self.cfg.finetune.patterns_to_freeze, invert_match=False)
         return model
 
     def forward(self, batch):
@@ -149,6 +149,7 @@ class LitModel(L.LightningModule):
                       sync_dist=self.cfg.machine.num_devices > 1)
         self.log("val_loss", loss, batch_size=self.cfg.machine.batch_size,
                  sync_dist=self.cfg.machine.num_devices > 1)
+<<<<<<< HEAD
         
     
         print(f'Batch index: {batch_idx}')
@@ -159,6 +160,10 @@ class LitModel(L.LightningModule):
             print(f'Batch index: {batch_idx}', file=log_file)
             print(f'Pred: {pred}', file=log_file)
             print(f'Obs: {obs}', file=log_file)
+=======
+        # log the best metric across epoch
+        
+>>>>>>> 21560a0da41737cdb4a9ab490dffa3f528bbd4a5
 
         if batch_idx == 0 and self.cfg.log_image:
             # log one example as scatter plot
