@@ -142,11 +142,24 @@ class LitModel(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         loss, pred, obs = self._shared_step(batch, batch_idx, stage='val')
+        print(f'Predictions shape: {preds.shape}, Targets shape: {targets.shape}')
+
         metrics = self.metrics(pred, obs)
         self.log_dict(metrics, batch_size=self.cfg.machine.batch_size,
                       sync_dist=self.cfg.machine.num_devices > 1)
         self.log("val_loss", loss, batch_size=self.cfg.machine.batch_size,
                  sync_dist=self.cfg.machine.num_devices > 1)
+        
+    
+        print(f'Batch index: {batch_idx}')
+        print(f'Pred: {pred}')
+        print(f'Obs: {obs}')
+
+        with open('debug_log.txt', 'a') as log_file:
+            print(f'Batch index: {batch_idx}', file=log_file)
+            print(f'Pred: {pred}', file=log_file)
+            print(f'Obs: {obs}', file=log_file)
+
         if batch_idx == 0 and self.cfg.log_image:
             # log one example as scatter plot
             for key in pred:

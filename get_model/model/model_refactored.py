@@ -480,14 +480,9 @@ class GETFinetuneATAC(BaseGETModel):
             x = self.motif_scanner(sample_peak_sequence, motif_mean_std)
             x_original = self.atac_attention(x, chunk_size, n_peaks, max_n_peaks)
             # Print debug information to the log file
-            print("Shape of x after motif_scanner:", x.shape, file=log_file)
-            print("Shape of x_original:", x_original[0].shape if isinstance(x_original, (list, tuple)) else x_original.shape, file=log_file)
-            print("Type of x_original:", type(x_original), file=log_file)
-
-            # Ensure x_original[0] is of shape (batch_size, 10)
-            # if x_original[0].shape[1] != 10:
-            #     print(f"Error: Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}", file=log_file)
-            #     raise ValueError(f"Expected x_original[0] to have 10 features, but got {x_original[0].shape[1]}")
+            # print("Shape of x after motif_scanner:", x.shape, file=log_file)
+            # print("Shape of x_original:", x_original[0].shape if isinstance(x_original, (list, tuple)) else x_original.shape, file=log_file)
+            # print("Type of x_original:", type(x_original), file=log_file)
 
             region_embed = torch.nn.Linear(in_features=x_original[0].shape[1], out_features=768)
             x = region_embed(x_original[0])
