@@ -36,14 +36,14 @@ optimizer:
 
 wandb:
   project_name: "finetune_k562_cage"
-  run_name: "finetune_k562.encode_hg38atac.ENCFF128WZG_cage.max"
+  run_name: "finetune_k562.encode_hg38atac.ENCFF128WZG_cage.max_natac.from_scratch"
 
 finetune:
-  pretrain_checkpoint: false
+  pretrain_checkpoint: true
   strict: true
-  use_lora: true
-  layers_with_lora: ['region_embed', 'head_exp', 'encoder']
-  checkpoint: "/pmglocal/alb2281/get/get_ckpts/checkpoint-best.pth"
+  use_lora: false
+  layers_with_lora: ['region_embed', 'encoder']
+  checkpoint: null
   patterns_to_freeze: []
   model_key: 'model'
 

@@ -167,12 +167,12 @@ class RegionLitModel(LitModel):
             self.min_exp_loss = val_exp_loss
         else:
             self.exp_overfit_count += 1
-        if self.exp_overfit_count > self.exp_overfit_threshold:
+        # if self.exp_overfit_count > self.exp_overfit_threshold:
             # freeze encoder, region_embed, head_exp
             # self.model.freeze_layers(
             #     patterns_to_freeze=['encoder', 'region_embed', 'head_exp'], invert_match=False)
-            print("Freezing exp loss component")
-            self.loss.freeze_component('exp')
+            # print("Freezing exp loss component")
+            # self.loss.freeze_component('exp')
 
     def predict_step(self, batch, batch_idx, *args, **kwargs):
         if self.cfg.task.test_mode == 'inference':
@@ -401,7 +401,7 @@ def run(cfg: DictConfig):
         accelerator = 'gpu'
         device = cfg.machine.num_devices
         if cfg.machine.num_devices > 1:
-            strategy = 'ddp_spawn'
+            strategy = 'ddp'
     else:
         strategy = 'auto'
         accelerator = 'cpu'
