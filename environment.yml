@@ -509,3 +509,5 @@ dependencies:
       - plotly
       - axial_attention
       - s3fs
+      - pyBigWig
+      - intervaltree
