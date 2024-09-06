@@ -197,6 +197,9 @@ class RegionMotifDatasetConfig:
     leave_out_celltypes: str | None = None
     mask_ratio: float = 0.0
     hic_path: str | None = None
+    hic_resolution: int = 5000
+    hic_method: str = "oe"
+    hic_normalization: str = "KR"
 
 @dataclass
 class OptimizerConfig:
