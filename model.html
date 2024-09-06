@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive SVG Diagram</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+
+        #svg-container {
+            width: 100%;
+            max-width: 1200px;
+            height: auto;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        #info-box {
+            position: fixed;
+            right: 200px;
+            top: 100px;
+            width: 400px;
+            background-color: white;
+            border: 1px solid #ccc;
+            padding: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            display: none;
+        }
+
+        #info-box h3 {
+            margin-top: 10;
+        }
+
+        #info-box p {
+            margin-bottom: 10;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="svg-container">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="-50 -50 1300 1800" width="100%" height="100%">
+            <style>
+                .component {
+                    fill: #f0f0f0;
+                    stroke: #333;
+                    stroke-width: 2;
+                }
+
+                .model {
+                    fill: #e6f3ff;
+                    stroke: #0066cc;
+                    stroke-width: 2;
+                }
+
+                .text {
+                    font-family: Arial, sans-serif;
+                    font-size: 12px;
+                }
+
+                .arrow {
+                    fill: none;
+                    stroke: #666;
+                    stroke-width: 1.5;
+                    opacity: 0.1;
+                }
+
+                .highlight {
+                    stroke: #ff6600;
+                    stroke-width: 3;
+                    opacity: 1;
+                }
+
+                .component:hover,
+                .model:hover {
+                    stroke: #ff6600;
+                    stroke-width: 3;
+                }
+
+                .highlight-component .component {
+                    fill: #ffe0b2;
+                }
+
+                .highlight-model .model {
+                    fill: #bbdefb;
+                }
+
+                .semi-transparent {
+                    opacity: 0.3;
+                }
+            </style>
+
+            <g id="models"></g>
+            <g id="components"></g>
+            <g id="connections"></g>
+
+            <!-- Legend -->
+            <rect x="550" y="800" width="20" height="20" class="model" />
+            <text class="text" x="580" y="815">Model</text>
+
+            <rect x="550" y="830" width="20" height="20" class="component" />
+            <text class="text" x="580" y="845">Component</text>
+        </svg>
+    </div>
+
+    <div id="info-box">
+        <h3 id="info-title"></h3>
+        <p id="info-doc"></p>
+    </div>
+
+    <script>
+        // Function to parse CSV data
+        function parseCSV(csv) {
+            const lines = csv.split('\n');
+            const result = [];
+            const headers = lines[0].split(',');
+
+            for (let i = 1; i < lines.length; i++) {
+                if (!lines[i]) continue;
+                const obj = {};
+                const currentline = lines[i].split(',');
+
+                for (let j = 0; j < headers.length; j++) {
+                    obj[headers[j].trim()] = currentline[j].trim();
+                }
+                result.push(obj);
+            }
+            return result;
+        }
+
+        // Function to create SVG elements
+        function createSVGElement(tag, attrs) {
+            const elem = document.createElementNS('http://www.w3.org/2000/svg', tag);
+            for (const key in attrs) {
+                elem.setAttribute(key, attrs[key]);
+            }
+            return elem;
+        }
+
+        // Function to create component or model
+        function createElement(id, type, x, y) {
+            const g = createSVGElement('g', { id: id });
+            const rect = createSVGElement('rect', {
+                class: type,
+                x: x,
+                y: y,
+                width: type === 'model' ? 250 : 120,
+                height: type === 'model' ? 50 : 30,
+                rx: 5,
+                ry: 5
+            });
+            const text = createSVGElement('text', {
+                class: 'text',
+                x: x + (type === 'model' ? 125 : 60),
+                y: y + (type === 'model' ? 30 : 20),
+                'text-anchor': 'middle'
+            });
+            text.textContent = id;
+            g.appendChild(rect);
+            g.appendChild(text);
+            return g;
+        }
+
+        // Function to create connection
+        function createConnection(modelId, componentId, modelIndex, componentIndex) {
+            const path = createSVGElement('path', {
+                class: 'arrow',
+                id: `${modelId}-${componentId}`,
+                d: `M270 ${35 + modelIndex * 60} Q500 ${15 + modelIndex * 60 + componentIndex * 10} 530 ${25 + componentIndex * 40}`
+            });
+            return path;
+        }
+
+        // Function to load CSV and create SVG elements
+        function loadCSVAndCreateSVG() {
+            fetch('model_component.csv')
+                .then(response => response.text())
+                .then(data => {
+                    const parsed = parseCSV(data);
+                    const models = new Set();
+                    const components = new Set();
+
+                    parsed.forEach(row => {
+                        models.add(row.model);
+                        components.add(row.component);
+                    });
+
+                    const modelsArray = Array.from(models);
+                    const componentsArray = Array.from(components);
+
+                    // Sort components: non-head_ first, then head_
+                    componentsArray.sort((a, b) => {
+                        const aIsHead = a.startsWith('head_');
+                        const bIsHead = b.startsWith('head_');
+                        if (aIsHead === bIsHead) return a.localeCompare(b);
+                        return aIsHead ? 1 : -1;
+                    });
+
+                    // Sort models: 'Region' models first, then others
+                    modelsArray.sort((a, b) => {
+                        const aHasRegion = a.includes('Region');
+                        const bHasRegion = b.includes('Region');
+                        if (aHasRegion === bHasRegion) return a.localeCompare(b);
+                        return aHasRegion ? -1 : 1;
+                    });
+
+                    const modelsContainer = document.getElementById('models');
+                    const componentsContainer = document.getElementById('components');
+                    const connectionsContainer = document.getElementById('connections');
+
+                    modelsArray.forEach((model, index) => {
+                        modelsContainer.appendChild(createElement(model, 'model', 10, 10 + index * 60));
+                    });
+
+                    componentsArray.forEach((component, index) => {
+                        componentsContainer.appendChild(createElement(component, 'component', 550, 10 + index * 40));
+                    });
+
+                    parsed.forEach(row => {
+                        const modelIndex = modelsArray.indexOf(row.model);
+                        const componentIndex = componentsArray.indexOf(row.component);
+                        connectionsContainer.appendChild(createConnection(row.model, row.component, modelIndex, componentIndex));
+                    });
+
+                    setupInteractivity();
+                });
+
+            // Load model information
+            fetch('model_info.json')
+                .then(response => response.json())
+                .then(data => {
+                    window.modelInfo = data;
+                });
+        }
+
+        let conditionedModel = null;
+
+        function getConnectedElements(id, direction = 'both') {
+            var connections = document.querySelectorAll('[id^="' + id + '-"], [id$="-' + id + '"]');
+            var connectedElements = new Set();
+
+            connections.forEach(function (connection) {
+                var connectedIds = connection.id.split('-');
+                var sourceId = connectedIds[0];
+                var targetId = connectedIds[1];
+
+                if (direction === 'incoming' && targetId === id) {
+                    connectedElements.add(sourceId);
+                } else if (direction === 'outgoing' && sourceId === id) {
+                    connectedElements.add(targetId);
+                } else if (direction === 'both') {
+                    if (sourceId === id) {
+                        connectedElements.add(targetId);
+                    } else if (targetId === id) {
+                        connectedElements.add(sourceId);
+                    }
+                }
+            });
+
+            return Array.from(connectedElements);
+        }
+
+        function updateHighlight(id, highlight) {
+            var element = document.getElementById(id);
+            var isModel = element.closest('#models');
+            var connections = document.querySelectorAll('[id^="' + id + '-"], [id$="-' + id + '"]');
+
+            connections.forEach(function (connection) {
+                if (highlight) {
+                    connection.classList.add('highlight');
+                } else {
+                    connection.classList.remove('highlight');
+                }
+            });
+
+            if (element) {
+                if (highlight) {
+                    element.classList.add(isModel ? 'highlight-model' : 'highlight-component');
+                } else {
+                    element.classList.remove('highlight-model', 'highlight-component');
+                }
+            }
+
+            if (isModel) {
+                var connectedComponents = getConnectedElements(id, 'outgoing');
+                connectedComponents.forEach(function (componentId) {
+                    var componentElement = document.getElementById(componentId);
+                    if (componentElement) {
+                        if (highlight) {
+                            componentElement.classList.add('highlight-component');
+                        } else {
+                            componentElement.classList.remove('highlight-component');
+                        }
+                    }
+                });
+            }
+        }
+
+        function clearAllHighlights() {
+            document.querySelectorAll('.highlight, .highlight-component, .highlight-model').forEach(function (el) {
+                el.classList.remove('highlight', 'highlight-component', 'highlight-model');
+            });
+        }
+
+        function setConditionedModel(modelId) {
+            conditionedModel = modelId;
+            document.querySelectorAll('#models > g, #components > g').forEach(function (el) {
+                el.classList.add('semi-transparent');
+            });
+            document.querySelectorAll('.arrow').forEach(function (el) {
+                el.classList.add('semi-transparent');
+            });
+
+            var modelElement = document.getElementById(modelId);
+            modelElement.classList.remove('semi-transparent');
+
+            var connectedComponents = getConnectedElements(modelId, 'outgoing');
+            connectedComponents.forEach(function (componentId) {
+                var componentElement = document.getElementById(componentId);
+                if (componentElement) {
+                    componentElement.classList.remove('semi-transparent');
+                }
+                var connection = document.getElementById(modelId + '-' + componentId);
+                if (connection) {
+                    connection.classList.remove('semi-transparent');
+                }
+            });
+        }
+
+        function clearConditionedModel() {
+            conditionedModel = null;
+            document.querySelectorAll('#models > g, #components > g, .arrow').forEach(function (el) {
+                el.classList.remove('semi-transparent');
+            });
+        }
+
+        function showInfoBox(title, doc) {
+            var infoBox = document.getElementById('info-box');
+            var infoTitle = document.getElementById('info-title');
+            var infoDoc = document.getElementById('info-doc');
+
+            infoTitle.textContent = title;
+            infoDoc.textContent = doc;
+            infoBox.style.display = 'block';
+        }
+
+        function hideInfoBox() {
+            var infoBox = document.getElementById('info-box');
+            infoBox.style.display = 'none';
+        }
+
+        function handleMouseEvent(event) {
+            var id = event.currentTarget.id;
+            var highlight = event.type === 'mouseover';
+            var isModel = event.currentTarget.closest('#models');
+
+            clearAllHighlights();
+            if (highlight) {
+                updateHighlight(id, true);
+                if (conditionedModel && !isModel) {
+                    var modelInfo = window.modelInfo[conditionedModel];
+                    if (modelInfo && modelInfo[id]) {
+                        showInfoBox(modelInfo[id].name, modelInfo[id].doc);
+                    }
+                }
+            } else {
+                hideInfoBox();
+            }
+        }
+
+        function handleClick(event) {
+            var id = event.currentTarget.id;
+            var isModel = event.currentTarget.closest('#models');
+
+            if (isModel) {
+                if (conditionedModel === id) {
+                    clearConditionedModel();
+                } else {
+                    setConditionedModel(id);
+                }
+            }
+        }
+
+        function handleSvgClick(event) {
+            if (event.target.tagName === 'svg') {
+                clearConditionedModel();
+            }
+        }
+
+        function setupInteractivity() {
+            var interactiveElements = document.querySelectorAll('#components > g, #models > g');
+            interactiveElements.forEach(function (el) {
+                el.addEventListener('mouseover', handleMouseEvent);
+                el.addEventListener('mouseout', handleMouseEvent);
+                el.addEventListener('click', handleClick);
+            });
+
+            document.querySelector('svg').addEventListener('click', handleSvgClick);
+        }
+
+        // Load CSV and create SVG elements when the page loads
+        window.onload = loadCSVAndCreateSVG;
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,20 @@
+model:
+  _target_: get_model.model.model.GETNucleotideMotifAdaptorV3
+  cfg:
+    motif_scanner:
+      num_motif: 256
+      include_reverse_complement: false
+      bidirectional_except_ctcf: false
+      motif_prior: false
+      learnable: true
+      has_bias: true
+    loss:
+      components:
+        motif:
+          _target_: torch.nn.MSELoss
+          reduction: "mean"
+      weights:
+        motif: 1
+    metrics:
+      components:
+        motif: ["pearson", "spearman", "r2"]

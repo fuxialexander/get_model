@@ -192,12 +192,29 @@ class RegionMotifDatasetConfig:
     zarr_path: str = MISSING
     celltypes: str = MISSING
     transform: Optional[Any] = None
+    normalize: bool = True
     quantitative_atac: bool = False
     sampling_step: int = 50
     num_region_per_sample: int = 1000
     leave_out_chromosomes: str | None = None
     leave_out_celltypes: str | None = None
     mask_ratio: float = 0.0
+    hic_path: str | None = None
+    hic_resolution: int = 5000
+    hic_method: str = "oe"
+    hic_normalization: str = "KR"
+
+@dataclass
+class NucleotideMotifDatasetConfig:
+    """
+    Configuration for the nucleotide motif dataset.
+    """
+    sequence_zarr: str = MISSING
+    motif_zarr: str = MISSING
+    transform: Optional[Any] = None
+    sequence_length: int = 512
+    leave_out_chromosomes: str | None = None
+
 
 @dataclass
 class OptimizerConfig:
@@ -480,6 +497,23 @@ class RegionZarrConfig:
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     task: TaskConfig = field(default_factory=TaskConfig)
 
+@dataclass
+class NucleotideMotifAdaptorConfig:
+    """
+    Configuration for nucleotide motif.
+    """
+    run: RunConfig = field(default_factory=RunConfig)
+    stage: str = "fit"
+    assembly: str = "hg38"
+    eval_tss: bool = False
+    log_image: bool = False
+    model: Any = MISSING
+    machine: MachineConfig = field(default_factory=MachineConfig)
+    dataset: NucleotideMotifDatasetConfig = field(default_factory=NucleotideMotifDatasetConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
+    task: TaskConfig = field(default_factory=TaskConfig)
 
 
 cs = ConfigStore.instance()
@@ -497,3 +531,5 @@ csr.store(name="base_region_config", node=RegionConfig)
 csz = ConfigStore.instance()
 csz.store(name="base_region_zarr_config", node=RegionZarrConfig)
 
+csn = ConfigStore.instance()
+csn.store(name="base_nucleotide_motif_adaptor_config", node=NucleotideMotifAdaptorConfig)

@@ -1,15 +1,17 @@
 model:
   _target_: get_model.model.model.GETRegionFinetuneHiC
   cfg:
-    num_regions: 900
-    num_motif: 283
+    num_regions: 200
+    num_motif: 285
     embed_dim: 768
     num_layers: 12
     num_heads: 12
     dropout: 0.1
-    output_dim: 1
+    output_dim: 2
     flash_attn: false
     pool_method: "mean"
+    distance_contact_map:
+      freezed: true
     region_embed:
       num_regions: ${model.cfg.num_regions}
       num_features: ${model.cfg.num_motif} 
@@ -24,10 +26,10 @@ model:
       use_mean_pooling: false
       flash_attn: ${model.cfg.flash_attn}
     head_hic:
-      embed_dim: ${model.cfg.embed_dim}
-      hidden_dim: 8
-      output_dim: ${model.cfg.output_dim}
-
+      input_dim: 128
+      hidden_dim: 64
+      output_dim: 1
+      kernel_size: 3
     mask_token:
       embed_dim: ${model.cfg.embed_dim}
       std: 0.02

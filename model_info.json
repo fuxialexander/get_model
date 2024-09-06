@@ -1,0 +1,3011 @@
+{
+    "GETRegionFinetuneExpHiCABC": {
+        "name": "GETRegionFinetuneExpHiCABC",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "distance_contact_map": {
+                "freezed": true
+            },
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "head_hic": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "head_abc": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "hic": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 0.1,
+                    "hic": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "hic": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 0.1,
+                    "hic": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformerWithContactMap",
+            "doc": "A transformer module for GET model that takes a distance map as an additional input and it will fuse every layer of GET base model pairwise embedding to the distance map.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        },
+        "head_hic": {
+            "name": "ContactMapHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            }
+        },
+        "head_abc": {
+            "name": "ContactMapHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            }
+        },
+        "distance_contact_map": {
+            "name": "DistanceContactHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "freezed": true
+            }
+        },
+        "proj_distance": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "GETChrombpNet": {
+        "name": "GETChrombpNet",
+        "doc": null,
+        "config": {
+            "motif_scanner": {
+                "num_motif": 512,
+                "include_reverse_complement": false,
+                "bidirectional_except_ctcf": false,
+                "motif_prior": false,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "pool_method": "mean",
+                "motif_dim": 512,
+                "hidden_dim": 256,
+                "n_dil_layers": 7,
+                "profile_kernel_size": 75
+            },
+            "loss": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.MSELoss"
+                    },
+                    "aprofile": {
+                        "_target_": "torch.nn.MSELoss"
+                    }
+                },
+                "weights": {
+                    "atpm": 10,
+                    "aprofile": 1
+                }
+            },
+            "metrics": {
+                "components": {
+                    "atpm": [
+                        "mse",
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "aprofile": [
+                        "mse"
+                    ]
+                }
+            },
+            "with_bias": false,
+            "bias_model": {
+                "_target_": "get_model.model.model.GETChrombpNetBias",
+                "cfg": {
+                    "motif_scanner": {
+                        "num_motif": 128,
+                        "include_reverse_complement": false,
+                        "bidirectional_except_ctcf": false,
+                        "motif_prior": false,
+                        "learnable": true,
+                        "has_bias": true
+                    },
+                    "atac_attention": {
+                        "pool_method": "mean",
+                        "motif_dim": 128,
+                        "hidden_dim": 128,
+                        "n_dil_layers": 4,
+                        "profile_kernel_size": 75
+                    },
+                    "loss": "${model.cfg.loss}",
+                    "metrics": "${model.cfg.metrics}"
+                }
+            },
+            "bias_ckpt": "/home/xf2217/Projects/get_model/logs/chrombpnet_thp1_bias/version_0/checkpoints/best.ckpt"
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.MSELoss"
+                    },
+                    "aprofile": {
+                        "_target_": "torch.nn.MSELoss"
+                    }
+                },
+                "weights": {
+                    "atpm": 10,
+                    "aprofile": 1
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": [
+                        "mse",
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "aprofile": [
+                        "mse"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 512,
+                "include_reverse_complement": false,
+                "bidirectional_except_ctcf": false,
+                "motif_prior": false,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "atac_attention": {
+            "name": "ConvPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "pool_method": "mean",
+                "motif_dim": 512,
+                "hidden_dim": 256,
+                "n_dil_layers": 7,
+                "profile_kernel_size": 75
+            }
+        }
+    },
+    "GETChrombpNetBias": {
+        "name": "GETChrombpNetBias",
+        "doc": null,
+        "config": {
+            "motif_scanner": {
+                "num_motif": 128,
+                "include_reverse_complement": false,
+                "bidirectional_except_ctcf": false,
+                "motif_prior": false,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "pool_method": "mean",
+                "motif_dim": 128,
+                "hidden_dim": 128,
+                "n_dil_layers": 4,
+                "profile_kernel_size": 75
+            },
+            "loss": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.MSELoss"
+                    },
+                    "aprofile": {
+                        "_target_": "torch.nn.MSELoss"
+                    }
+                },
+                "weights": {
+                    "atpm": 0,
+                    "aprofile": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "atpm": [
+                        "mse",
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "aprofile": [
+                        "mse"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.MSELoss"
+                    },
+                    "aprofile": {
+                        "_target_": "torch.nn.MSELoss"
+                    }
+                },
+                "weights": {
+                    "atpm": 0,
+                    "aprofile": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": [
+                        "mse",
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "aprofile": [
+                        "mse"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 128,
+                "include_reverse_complement": false,
+                "bidirectional_except_ctcf": false,
+                "motif_prior": false,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "atac_attention": {
+            "name": "ConvPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "pool_method": "mean",
+                "motif_dim": 128,
+                "hidden_dim": 128,
+                "n_dil_layers": 4,
+                "profile_kernel_size": 75
+            }
+        }
+    },
+    "GETFinetuneMaxNorm": {
+        "name": "GETFinetuneMaxNorm",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 637,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "motif_scanner": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            },
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "atac_attention": {
+            "name": "ATACSplitPoolMaxNorm",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        }
+    },
+    "GETPretrainMaxNorm": {
+        "name": "GETPretrainMaxNorm",
+        "doc": null,
+        "config": {
+            "num_regions": 10,
+            "num_motif": 637,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 800,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "motif_scanner": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": false,
+                "has_bias": false
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            },
+            "region_embed": {
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_mask": {
+                "in_features": "${model.cfg.embed_dim}",
+                "out_features": "${model.cfg.output_dim}"
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "masked": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "masked": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "masked": [
+                        "pearson",
+                        "mse",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "masked": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "masked": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "masked": [
+                        "pearson",
+                        "mse",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": false,
+                "has_bias": false
+            }
+        },
+        "atac_attention": {
+            "name": "ATACSplitPoolMaxNorm",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_mask": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": {
+                "in_features": "${model.cfg.embed_dim}",
+                "out_features": "${model.cfg.output_dim}"
+            }
+        }
+    },
+    "GETRegionPretrain": {
+        "name": "GETRegionPretrain",
+        "doc": null,
+        "config": {
+            "num_regions": 900,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": "${model.cfg.num_motif}",
+            "flash_attn": false,
+            "pool_method": "mean",
+            "region_embed": {
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_mask": {
+                "in_features": "${model.cfg.embed_dim}",
+                "out_features": "${model.cfg.output_dim}"
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "masked": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "masked": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "masked": [
+                        "pearson",
+                        "mse",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "masked": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "masked": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "masked": [
+                        "pearson",
+                        "mse",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_mask": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": {
+                "in_features": "${model.cfg.embed_dim}",
+                "out_features": "${model.cfg.output_dim}"
+            }
+        }
+    },
+    "GETFinetuneGBM": {
+        "name": "GETFinetuneGBM",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 637,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "motif_scanner": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": false,
+                "has_bias": false
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            },
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "head_atac": {
+                "embed_dim": 800,
+                "hidden_dim": 768,
+                "output_dim": 1,
+                "drop": 0.1
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "atac": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0,
+                    "atac": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "atac": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "atac": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0,
+                    "atac": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "atac": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": false,
+                "has_bias": false
+            }
+        },
+        "atac_attention": {
+            "name": "ATACSplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        },
+        "head_atac": {
+            "name": "ATACHead",
+            "doc": "ATAC head",
+            "config": {
+                "embed_dim": 800,
+                "hidden_dim": 768,
+                "output_dim": 1,
+                "drop": 0.1
+            }
+        }
+    },
+    "GETRegionFinetune": {
+        "name": "GETRegionFinetune",
+        "doc": null,
+        "config": {
+            "num_regions": 900,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        }
+    },
+    "GETRegionFinetunePositional": {
+        "name": "GETRegionFinetunePositional",
+        "doc": null,
+        "config": {
+            "num_regions": 900,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        },
+        "pos_embed": {
+            "name": "AbsolutePositionalEncoding",
+            "doc": "Absolute positional encoding, as described in \"Attention Is All You Need\".",
+            "config": ""
+        }
+    },
+    "GETNucleotideMotifAdaptor": {
+        "name": "GETNucleotideMotifAdaptor",
+        "doc": null,
+        "config": {
+            "motif_scanner": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            },
+            "region_embed": {
+                "num_regions": 10,
+                "num_features": 283,
+                "embed_dim": 768
+            },
+            "atac_attention": {
+                "pool_method": "sum"
+            },
+            "loss": {
+                "components": {
+                    "motif": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "motif": 1
+                }
+            },
+            "metrics": {
+                "components": {
+                    "motif": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "motif": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "motif": 1
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "motif": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "conv_blocks": {
+            "name": "ModuleList",
+            "doc": "Holds submodules in a list.\n\n    :class:`~torch.nn.ModuleList` can be indexed like a regular Python list, but\n    modules it contains are properly registered, and will be visible by all\n    :class:`~torch.nn.Module` methods.\n\n    Args:\n        modules (iterable, optional): an iterable of modules to add\n\n    Example::\n\n        class MyModule(nn.Module):\n            def __init__(self):\n                super().__init__()\n                self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])\n\n            def forward(self, x):\n                # ModuleList can act as an iterable, or be indexed using ints\n                for i, l in enumerate(self.linears):\n                    x = self.linears[i // 2](x) + l(x)\n                return x\n    ",
+            "config": ""
+        },
+        "atac_attention": {
+            "name": "SplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "pool_method": "sum"
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": 10,
+                "num_features": 283,
+                "embed_dim": 768
+            }
+        },
+        "proj": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "GETFinetune": {
+        "name": "GETFinetune",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 637,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "motif_scanner": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            },
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "atac_attention": {
+            "name": "ATACSplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        }
+    },
+    "MLPRegionFinetune": {
+        "name": "MLPRegionFinetune",
+        "doc": null,
+        "config": {
+            "input_dim": 283,
+            "use_atac": false,
+            "output_dim": 2,
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "linear1": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        },
+        "relu1": {
+            "name": "ReLU",
+            "doc": "Applies the rectified linear unit function element-wise:\n\n    :math:`\\text{ReLU}(x) = (x)^+ = \\max(0, x)`\n\n    Args:\n        inplace: can optionally do the operation in-place. Default: ``False``\n\n    Shape:\n        - Input: :math:`(*)`, where :math:`*` means any number of dimensions.\n        - Output: :math:`(*)`, same shape as the input.\n\n    .. image:: ../scripts/activation_images/ReLU.png\n\n    Examples::\n\n        >>> m = nn.ReLU()\n        >>> input = torch.randn(2)\n        >>> output = m(input)\n\n\n      An implementation of CReLU - https://arxiv.org/abs/1603.05201\n\n        >>> m = nn.ReLU()\n        >>> input = torch.randn(2).unsqueeze(0)\n        >>> output = torch.cat((m(input), m(-input)))\n    ",
+            "config": ""
+        },
+        "linear2": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        },
+        "relu2": {
+            "name": "ReLU",
+            "doc": "Applies the rectified linear unit function element-wise:\n\n    :math:`\\text{ReLU}(x) = (x)^+ = \\max(0, x)`\n\n    Args:\n        inplace: can optionally do the operation in-place. Default: ``False``\n\n    Shape:\n        - Input: :math:`(*)`, where :math:`*` means any number of dimensions.\n        - Output: :math:`(*)`, same shape as the input.\n\n    .. image:: ../scripts/activation_images/ReLU.png\n\n    Examples::\n\n        >>> m = nn.ReLU()\n        >>> input = torch.randn(2)\n        >>> output = m(input)\n\n\n      An implementation of CReLU - https://arxiv.org/abs/1603.05201\n\n        >>> m = nn.ReLU()\n        >>> input = torch.randn(2).unsqueeze(0)\n        >>> output = torch.cat((m(input), m(-input)))\n    ",
+            "config": ""
+        },
+        "linear3": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "GETNucleotideRegionFinetuneATAC": {
+        "name": "GETNucleotideRegionFinetuneATAC",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 1,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "motif_scanner": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "sum"
+            },
+            "region_embed": {
+                "num_regions": 200,
+                "num_features": 283,
+                "embed_dim": 768
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "atpm": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "atpm": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "atpm": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "conv_blocks": {
+            "name": "ModuleList",
+            "doc": "Holds submodules in a list.\n\n    :class:`~torch.nn.ModuleList` can be indexed like a regular Python list, but\n    modules it contains are properly registered, and will be visible by all\n    :class:`~torch.nn.Module` methods.\n\n    Args:\n        modules (iterable, optional): an iterable of modules to add\n\n    Example::\n\n        class MyModule(nn.Module):\n            def __init__(self):\n                super().__init__()\n                self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])\n\n            def forward(self, x):\n                # ModuleList can act as an iterable, or be indexed using ints\n                for i, l in enumerate(self.linears):\n                    x = self.linears[i // 2](x) + l(x)\n                return x\n    ",
+            "config": ""
+        },
+        "atac_attention": {
+            "name": "SplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "sum"
+            }
+        },
+        "proj": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        }
+    },
+    "GETPretrain": {
+        "name": "GETPretrain",
+        "doc": null,
+        "config": {
+            "num_regions": 10,
+            "num_motif": 637,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 800,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "motif_scanner": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": false,
+                "has_bias": false
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            },
+            "region_embed": {
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_mask": {
+                "in_features": "${model.cfg.embed_dim}",
+                "out_features": "${model.cfg.output_dim}"
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "masked": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "masked": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "masked": [
+                        "pearson",
+                        "mse",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "masked": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "masked": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "masked": [
+                        "pearson",
+                        "mse",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": "${model.cfg.num_motif}",
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": false,
+                "has_bias": false
+            }
+        },
+        "atac_attention": {
+            "name": "ATACSplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "mean",
+                "atac_kernel_num": 161,
+                "atac_kernel_size": 3,
+                "joint_kernel_num": 161,
+                "joint_kernel_size": 3,
+                "binary_atac": false,
+                "final_bn": false
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_features": 800,
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_mask": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": {
+                "in_features": "${model.cfg.embed_dim}",
+                "out_features": "${model.cfg.output_dim}"
+            }
+        }
+    },
+    "GETRegionFinetuneATAC": {
+        "name": "GETRegionFinetuneATAC",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 1,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": 1,
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "atpm": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "atpm": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "atpm": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "atpm": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": 1,
+                "use_atac": false
+            }
+        }
+    },
+    "GETRegionFinetuneExpHiCAxial": {
+        "name": "GETRegionFinetuneExpHiCAxial",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "distance_contact_map": {
+                "freezed": true
+            },
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "head_hic": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "head_abc": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "hic": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "exp": 0.1,
+                    "hic": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "hic": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "exp": 0.1,
+                    "hic": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformerWithContactMapAxial",
+            "doc": "A transformer module for GET model that takes a distance map as an additional input and it will fuse every layer of GET base model pairwise embedding to the distance map.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        },
+        "distance_contact_map": {
+            "name": "DistanceContactHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "freezed": true
+            }
+        },
+        "proj_distance": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "GETNucleotideRegionFinetuneExpHiCABC": {
+        "name": "GETNucleotideRegionFinetuneExpHiCABC",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "distance_contact_map": {
+                "freezed": true
+            },
+            "motif_scanner": {
+                "num_motif": 128,
+                "include_reverse_complement": false,
+                "bidirectional_except_ctcf": false,
+                "motif_prior": false,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "motif_dim": 128,
+                "pool_method": "sum"
+            },
+            "region_embed": {
+                "num_regions": 200,
+                "num_features": 283,
+                "embed_dim": 768
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "head_hic": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "head_abc": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "hic": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "motif": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "exp": 1.0,
+                    "hic": 1.0,
+                    "motif": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "motif": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "hic": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    },
+                    "motif": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "exp": 1.0,
+                    "hic": 1.0,
+                    "motif": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ],
+                    "motif": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 128,
+                "include_reverse_complement": false,
+                "bidirectional_except_ctcf": false,
+                "motif_prior": false,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "conv_blocks": {
+            "name": "ModuleList",
+            "doc": "Holds submodules in a list.\n\n    :class:`~torch.nn.ModuleList` can be indexed like a regular Python list, but\n    modules it contains are properly registered, and will be visible by all\n    :class:`~torch.nn.Module` methods.\n\n    Args:\n        modules (iterable, optional): an iterable of modules to add\n\n    Example::\n\n        class MyModule(nn.Module):\n            def __init__(self):\n                super().__init__()\n                self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])\n\n            def forward(self, x):\n                # ModuleList can act as an iterable, or be indexed using ints\n                for i, l in enumerate(self.linears):\n                    x = self.linears[i // 2](x) + l(x)\n                return x\n    ",
+            "config": ""
+        },
+        "atac_attention": {
+            "name": "SplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 128,
+                "pool_method": "sum"
+            }
+        },
+        "proj": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": 200,
+                "num_features": 283,
+                "embed_dim": 768
+            }
+        },
+        "encoder": {
+            "name": "GETTransformerWithContactMap",
+            "doc": "A transformer module for GET model that takes a distance map as an additional input and it will fuse every layer of GET base model pairwise embedding to the distance map.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        },
+        "head_hic": {
+            "name": "ContactMapHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            }
+        },
+        "head_abc": {
+            "name": "ContactMapHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            }
+        },
+        "distance_contact_map": {
+            "name": "DistanceContactHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "freezed": true
+            }
+        },
+        "proj_distance": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "GETRegionFinetuneHiCOE": {
+        "name": "GETRegionFinetuneHiCOE",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 285,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "distance_contact_map": {
+                "freezed": true
+            },
+            "region_embed": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_hic": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "hic": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "hic": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "hic": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "mean"
+                    }
+                },
+                "weights": {
+                    "hic": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": "${model.cfg.num_regions}",
+                "num_features": "${model.cfg.num_motif}",
+                "embed_dim": "${model.cfg.embed_dim}"
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_hic": {
+            "name": "ContactMapHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "input_dim": 128,
+                "hidden_dim": 64,
+                "output_dim": 1
+            }
+        },
+        "distance_contact_map": {
+            "name": "DistanceContactHead",
+            "doc": "A simple and small ResNet model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+            "config": {
+                "freezed": true
+            }
+        },
+        "proj_distance": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "GETNucleotideV1MotifAdaptor": {
+        "name": "GETNucleotideV1MotifAdaptor",
+        "doc": null,
+        "config": {
+            "motif_scanner": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            },
+            "region_embed": {
+                "num_regions": 10,
+                "num_features": 283,
+                "embed_dim": 768
+            },
+            "atac_attention": {
+                "pool_method": "sum"
+            },
+            "loss": {
+                "components": {
+                    "motif": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "sum"
+                    }
+                },
+                "weights": {
+                    "motif": 1
+                }
+            },
+            "metrics": {
+                "components": {
+                    "motif": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "motif": {
+                        "_target_": "torch.nn.MSELoss",
+                        "reduction": "sum"
+                    }
+                },
+                "weights": {
+                    "motif": 1
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "motif": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "conv_blocks": {
+            "name": "ModuleList",
+            "doc": "Holds submodules in a list.\n\n    :class:`~torch.nn.ModuleList` can be indexed like a regular Python list, but\n    modules it contains are properly registered, and will be visible by all\n    :class:`~torch.nn.Module` methods.\n\n    Args:\n        modules (iterable, optional): an iterable of modules to add\n\n    Example::\n\n        class MyModule(nn.Module):\n            def __init__(self):\n                super().__init__()\n                self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])\n\n            def forward(self, x):\n                # ModuleList can act as an iterable, or be indexed using ints\n                for i, l in enumerate(self.linears):\n                    x = self.linears[i // 2](x) + l(x)\n                return x\n    ",
+            "config": ""
+        },
+        "atac_attention": {
+            "name": "SplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "pool_method": "sum"
+            }
+        },
+        "proj": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        }
+    },
+    "DistanceContactMap": {
+        "name": "DistanceContactMap",
+        "doc": "A simple and small Conv2d model to predict the contact map from the log distance map.\n    The output has the same shape as the input distance map.\n    ",
+        "config": {
+            "cfg": null,
+            "num_layers": 12,
+            "loss": {
+                "components": {
+                    "hic": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "hic": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "hic": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "hic": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "hic": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "conv1": {
+            "name": "Conv2d",
+            "doc": "Applies a 2D convolution over an input signal composed of several input\n    planes.\n\n    In the simplest case, the output value of the layer with input size\n    :math:`(N, C_{\\text{in}}, H, W)` and output :math:`(N, C_{\\text{out}}, H_{\\text{out}}, W_{\\text{out}})`\n    can be precisely described as:\n\n    .. math::\n        \\text{out}(N_i, C_{\\text{out}_j}) = \\text{bias}(C_{\\text{out}_j}) +\n        \\sum_{k = 0}^{C_{\\text{in}} - 1} \\text{weight}(C_{\\text{out}_j}, k) \\star \\text{input}(N_i, k)\n\n\n    where :math:`\\star` is the valid 2D `cross-correlation`_ operator,\n    :math:`N` is a batch size, :math:`C` denotes a number of channels,\n    :math:`H` is a height of input planes in pixels, and :math:`W` is\n    width in pixels.\n    \n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    * :attr:`stride` controls the stride for the cross-correlation, a single\n      number or a tuple.\n\n    * :attr:`padding` controls the amount of padding applied to the input. It\n      can be either a string {'valid', 'same'} or an int / a tuple of ints giving the\n      amount of implicit padding applied on both sides.\n\n    * :attr:`dilation` controls the spacing between the kernel points; also\n      known as the \u00e0 trous algorithm. It is harder to describe, but this `link`_\n      has a nice visualization of what :attr:`dilation` does.\n\n    * :attr:`groups` controls the connections between inputs and outputs.\n      :attr:`in_channels` and :attr:`out_channels` must both be divisible by\n      :attr:`groups`. For example,\n\n        * At groups=1, all inputs are convolved to all outputs.\n        * At groups=2, the operation becomes equivalent to having two conv\n          layers side by side, each seeing half the input channels\n          and producing half the output channels, and both subsequently\n          concatenated.\n        * At groups= :attr:`in_channels`, each input channel is convolved with\n          its own set of filters (of size\n          :math:`\\frac{\\text{out\\_channels}}{\\text{in\\_channels}}`).\n\n    The parameters :attr:`kernel_size`, :attr:`stride`, :attr:`padding`, :attr:`dilation` can either be:\n\n        - a single ``int`` -- in which case the same value is used for the height and width dimension\n        - a ``tuple`` of two ints -- in which case, the first `int` is used for the height dimension,\n          and the second `int` for the width dimension\n\n    Note:\n        When `groups == in_channels` and `out_channels == K * in_channels`,\n        where `K` is a positive integer, this operation is also known as a \"depthwise convolution\".\n\n        In other words, for an input of size :math:`(N, C_{in}, L_{in})`,\n        a depthwise convolution with a depthwise multiplier `K` can be performed with the arguments\n        :math:`(C_\\text{in}=C_\\text{in}, C_\\text{out}=C_\\text{in} \\times \\text{K}, ..., \\text{groups}=C_\\text{in})`.\n\n    Note:\n        In some circumstances when given tensors on a CUDA device and using CuDNN, this operator may select a nondeterministic algorithm to increase performance. If this is undesirable, you can try to make the operation deterministic (potentially at a performance cost) by setting ``torch.backends.cudnn.deterministic = True``. See :doc:`/notes/randomness` for more information.\n\n    Note:\n        ``padding='valid'`` is the same as no padding. ``padding='same'`` pads\n        the input so the output has the shape as the input. However, this mode\n        doesn't support any stride values other than 1.\n\n    Note:\n        This module supports complex data types i.e. ``complex32, complex64, complex128``.\n\n    Args:\n        in_channels (int): Number of channels in the input image\n        out_channels (int): Number of channels produced by the convolution\n        kernel_size (int or tuple): Size of the convolving kernel\n        stride (int or tuple, optional): Stride of the convolution. Default: 1\n        padding (int, tuple or str, optional): Padding added to all four sides of\n            the input. Default: 0\n        padding_mode (str, optional): ``'zeros'``, ``'reflect'``,\n            ``'replicate'`` or ``'circular'``. Default: ``'zeros'``\n        dilation (int or tuple, optional): Spacing between kernel elements. Default: 1\n        groups (int, optional): Number of blocked connections from input\n            channels to output channels. Default: 1\n        bias (bool, optional): If ``True``, adds a learnable bias to the\n            output. Default: ``True``\n    \n\n    Shape:\n        - Input: :math:`(N, C_{in}, H_{in}, W_{in})` or :math:`(C_{in}, H_{in}, W_{in})`\n        - Output: :math:`(N, C_{out}, H_{out}, W_{out})` or :math:`(C_{out}, H_{out}, W_{out})`, where\n\n          .. math::\n              H_{out} = \\left\\lfloor\\frac{H_{in}  + 2 \\times \\text{padding}[0] - \\text{dilation}[0]\n                        \\times (\\text{kernel\\_size}[0] - 1) - 1}{\\text{stride}[0]} + 1\\right\\rfloor\n\n          .. math::\n              W_{out} = \\left\\lfloor\\frac{W_{in}  + 2 \\times \\text{padding}[1] - \\text{dilation}[1]\n                        \\times (\\text{kernel\\_size}[1] - 1) - 1}{\\text{stride}[1]} + 1\\right\\rfloor\n\n    Attributes:\n        weight (Tensor): the learnable weights of the module of shape\n            :math:`(\\text{out\\_channels}, \\frac{\\text{in\\_channels}}{\\text{groups}},`\n            :math:`\\text{kernel\\_size[0]}, \\text{kernel\\_size[1]})`.\n            The values of these weights are sampled from\n            :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n            :math:`k = \\frac{groups}{C_\\text{in} * \\prod_{i=0}^{1}\\text{kernel\\_size}[i]}`\n        bias (Tensor):   the learnable bias of the module of shape\n            (out_channels). If :attr:`bias` is ``True``,\n            then the values of these weights are\n            sampled from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n            :math:`k = \\frac{groups}{C_\\text{in} * \\prod_{i=0}^{1}\\text{kernel\\_size}[i]}`\n\n    Examples:\n\n        >>> # With square kernels and equal stride\n        >>> m = nn.Conv2d(16, 33, 3, stride=2)\n        >>> # non-square kernels and unequal stride and with padding\n        >>> m = nn.Conv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2))\n        >>> # non-square kernels and unequal stride and with padding and dilation\n        >>> m = nn.Conv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2), dilation=(3, 1))\n        >>> input = torch.randn(20, 16, 50, 100)\n        >>> output = m(input)\n\n    .. _cross-correlation:\n        https://en.wikipedia.org/wiki/Cross-correlation\n\n    .. _link:\n        https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md\n    ",
+            "config": ""
+        },
+        "conv2": {
+            "name": "Conv2d",
+            "doc": "Applies a 2D convolution over an input signal composed of several input\n    planes.\n\n    In the simplest case, the output value of the layer with input size\n    :math:`(N, C_{\\text{in}}, H, W)` and output :math:`(N, C_{\\text{out}}, H_{\\text{out}}, W_{\\text{out}})`\n    can be precisely described as:\n\n    .. math::\n        \\text{out}(N_i, C_{\\text{out}_j}) = \\text{bias}(C_{\\text{out}_j}) +\n        \\sum_{k = 0}^{C_{\\text{in}} - 1} \\text{weight}(C_{\\text{out}_j}, k) \\star \\text{input}(N_i, k)\n\n\n    where :math:`\\star` is the valid 2D `cross-correlation`_ operator,\n    :math:`N` is a batch size, :math:`C` denotes a number of channels,\n    :math:`H` is a height of input planes in pixels, and :math:`W` is\n    width in pixels.\n    \n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    * :attr:`stride` controls the stride for the cross-correlation, a single\n      number or a tuple.\n\n    * :attr:`padding` controls the amount of padding applied to the input. It\n      can be either a string {'valid', 'same'} or an int / a tuple of ints giving the\n      amount of implicit padding applied on both sides.\n\n    * :attr:`dilation` controls the spacing between the kernel points; also\n      known as the \u00e0 trous algorithm. It is harder to describe, but this `link`_\n      has a nice visualization of what :attr:`dilation` does.\n\n    * :attr:`groups` controls the connections between inputs and outputs.\n      :attr:`in_channels` and :attr:`out_channels` must both be divisible by\n      :attr:`groups`. For example,\n\n        * At groups=1, all inputs are convolved to all outputs.\n        * At groups=2, the operation becomes equivalent to having two conv\n          layers side by side, each seeing half the input channels\n          and producing half the output channels, and both subsequently\n          concatenated.\n        * At groups= :attr:`in_channels`, each input channel is convolved with\n          its own set of filters (of size\n          :math:`\\frac{\\text{out\\_channels}}{\\text{in\\_channels}}`).\n\n    The parameters :attr:`kernel_size`, :attr:`stride`, :attr:`padding`, :attr:`dilation` can either be:\n\n        - a single ``int`` -- in which case the same value is used for the height and width dimension\n        - a ``tuple`` of two ints -- in which case, the first `int` is used for the height dimension,\n          and the second `int` for the width dimension\n\n    Note:\n        When `groups == in_channels` and `out_channels == K * in_channels`,\n        where `K` is a positive integer, this operation is also known as a \"depthwise convolution\".\n\n        In other words, for an input of size :math:`(N, C_{in}, L_{in})`,\n        a depthwise convolution with a depthwise multiplier `K` can be performed with the arguments\n        :math:`(C_\\text{in}=C_\\text{in}, C_\\text{out}=C_\\text{in} \\times \\text{K}, ..., \\text{groups}=C_\\text{in})`.\n\n    Note:\n        In some circumstances when given tensors on a CUDA device and using CuDNN, this operator may select a nondeterministic algorithm to increase performance. If this is undesirable, you can try to make the operation deterministic (potentially at a performance cost) by setting ``torch.backends.cudnn.deterministic = True``. See :doc:`/notes/randomness` for more information.\n\n    Note:\n        ``padding='valid'`` is the same as no padding. ``padding='same'`` pads\n        the input so the output has the shape as the input. However, this mode\n        doesn't support any stride values other than 1.\n\n    Note:\n        This module supports complex data types i.e. ``complex32, complex64, complex128``.\n\n    Args:\n        in_channels (int): Number of channels in the input image\n        out_channels (int): Number of channels produced by the convolution\n        kernel_size (int or tuple): Size of the convolving kernel\n        stride (int or tuple, optional): Stride of the convolution. Default: 1\n        padding (int, tuple or str, optional): Padding added to all four sides of\n            the input. Default: 0\n        padding_mode (str, optional): ``'zeros'``, ``'reflect'``,\n            ``'replicate'`` or ``'circular'``. Default: ``'zeros'``\n        dilation (int or tuple, optional): Spacing between kernel elements. Default: 1\n        groups (int, optional): Number of blocked connections from input\n            channels to output channels. Default: 1\n        bias (bool, optional): If ``True``, adds a learnable bias to the\n            output. Default: ``True``\n    \n\n    Shape:\n        - Input: :math:`(N, C_{in}, H_{in}, W_{in})` or :math:`(C_{in}, H_{in}, W_{in})`\n        - Output: :math:`(N, C_{out}, H_{out}, W_{out})` or :math:`(C_{out}, H_{out}, W_{out})`, where\n\n          .. math::\n              H_{out} = \\left\\lfloor\\frac{H_{in}  + 2 \\times \\text{padding}[0] - \\text{dilation}[0]\n                        \\times (\\text{kernel\\_size}[0] - 1) - 1}{\\text{stride}[0]} + 1\\right\\rfloor\n\n          .. math::\n              W_{out} = \\left\\lfloor\\frac{W_{in}  + 2 \\times \\text{padding}[1] - \\text{dilation}[1]\n                        \\times (\\text{kernel\\_size}[1] - 1) - 1}{\\text{stride}[1]} + 1\\right\\rfloor\n\n    Attributes:\n        weight (Tensor): the learnable weights of the module of shape\n            :math:`(\\text{out\\_channels}, \\frac{\\text{in\\_channels}}{\\text{groups}},`\n            :math:`\\text{kernel\\_size[0]}, \\text{kernel\\_size[1]})`.\n            The values of these weights are sampled from\n            :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n            :math:`k = \\frac{groups}{C_\\text{in} * \\prod_{i=0}^{1}\\text{kernel\\_size}[i]}`\n        bias (Tensor):   the learnable bias of the module of shape\n            (out_channels). If :attr:`bias` is ``True``,\n            then the values of these weights are\n            sampled from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n            :math:`k = \\frac{groups}{C_\\text{in} * \\prod_{i=0}^{1}\\text{kernel\\_size}[i]}`\n\n    Examples:\n\n        >>> # With square kernels and equal stride\n        >>> m = nn.Conv2d(16, 33, 3, stride=2)\n        >>> # non-square kernels and unequal stride and with padding\n        >>> m = nn.Conv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2))\n        >>> # non-square kernels and unequal stride and with padding and dilation\n        >>> m = nn.Conv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2), dilation=(3, 1))\n        >>> input = torch.randn(20, 16, 50, 100)\n        >>> output = m(input)\n\n    .. _cross-correlation:\n        https://en.wikipedia.org/wiki/Cross-correlation\n\n    .. _link:\n        https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md\n    ",
+            "config": ""
+        },
+        "conv3": {
+            "name": "Conv2d",
+            "doc": "Applies a 2D convolution over an input signal composed of several input\n    planes.\n\n    In the simplest case, the output value of the layer with input size\n    :math:`(N, C_{\\text{in}}, H, W)` and output :math:`(N, C_{\\text{out}}, H_{\\text{out}}, W_{\\text{out}})`\n    can be precisely described as:\n\n    .. math::\n        \\text{out}(N_i, C_{\\text{out}_j}) = \\text{bias}(C_{\\text{out}_j}) +\n        \\sum_{k = 0}^{C_{\\text{in}} - 1} \\text{weight}(C_{\\text{out}_j}, k) \\star \\text{input}(N_i, k)\n\n\n    where :math:`\\star` is the valid 2D `cross-correlation`_ operator,\n    :math:`N` is a batch size, :math:`C` denotes a number of channels,\n    :math:`H` is a height of input planes in pixels, and :math:`W` is\n    width in pixels.\n    \n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    * :attr:`stride` controls the stride for the cross-correlation, a single\n      number or a tuple.\n\n    * :attr:`padding` controls the amount of padding applied to the input. It\n      can be either a string {'valid', 'same'} or an int / a tuple of ints giving the\n      amount of implicit padding applied on both sides.\n\n    * :attr:`dilation` controls the spacing between the kernel points; also\n      known as the \u00e0 trous algorithm. It is harder to describe, but this `link`_\n      has a nice visualization of what :attr:`dilation` does.\n\n    * :attr:`groups` controls the connections between inputs and outputs.\n      :attr:`in_channels` and :attr:`out_channels` must both be divisible by\n      :attr:`groups`. For example,\n\n        * At groups=1, all inputs are convolved to all outputs.\n        * At groups=2, the operation becomes equivalent to having two conv\n          layers side by side, each seeing half the input channels\n          and producing half the output channels, and both subsequently\n          concatenated.\n        * At groups= :attr:`in_channels`, each input channel is convolved with\n          its own set of filters (of size\n          :math:`\\frac{\\text{out\\_channels}}{\\text{in\\_channels}}`).\n\n    The parameters :attr:`kernel_size`, :attr:`stride`, :attr:`padding`, :attr:`dilation` can either be:\n\n        - a single ``int`` -- in which case the same value is used for the height and width dimension\n        - a ``tuple`` of two ints -- in which case, the first `int` is used for the height dimension,\n          and the second `int` for the width dimension\n\n    Note:\n        When `groups == in_channels` and `out_channels == K * in_channels`,\n        where `K` is a positive integer, this operation is also known as a \"depthwise convolution\".\n\n        In other words, for an input of size :math:`(N, C_{in}, L_{in})`,\n        a depthwise convolution with a depthwise multiplier `K` can be performed with the arguments\n        :math:`(C_\\text{in}=C_\\text{in}, C_\\text{out}=C_\\text{in} \\times \\text{K}, ..., \\text{groups}=C_\\text{in})`.\n\n    Note:\n        In some circumstances when given tensors on a CUDA device and using CuDNN, this operator may select a nondeterministic algorithm to increase performance. If this is undesirable, you can try to make the operation deterministic (potentially at a performance cost) by setting ``torch.backends.cudnn.deterministic = True``. See :doc:`/notes/randomness` for more information.\n\n    Note:\n        ``padding='valid'`` is the same as no padding. ``padding='same'`` pads\n        the input so the output has the shape as the input. However, this mode\n        doesn't support any stride values other than 1.\n\n    Note:\n        This module supports complex data types i.e. ``complex32, complex64, complex128``.\n\n    Args:\n        in_channels (int): Number of channels in the input image\n        out_channels (int): Number of channels produced by the convolution\n        kernel_size (int or tuple): Size of the convolving kernel\n        stride (int or tuple, optional): Stride of the convolution. Default: 1\n        padding (int, tuple or str, optional): Padding added to all four sides of\n            the input. Default: 0\n        padding_mode (str, optional): ``'zeros'``, ``'reflect'``,\n            ``'replicate'`` or ``'circular'``. Default: ``'zeros'``\n        dilation (int or tuple, optional): Spacing between kernel elements. Default: 1\n        groups (int, optional): Number of blocked connections from input\n            channels to output channels. Default: 1\n        bias (bool, optional): If ``True``, adds a learnable bias to the\n            output. Default: ``True``\n    \n\n    Shape:\n        - Input: :math:`(N, C_{in}, H_{in}, W_{in})` or :math:`(C_{in}, H_{in}, W_{in})`\n        - Output: :math:`(N, C_{out}, H_{out}, W_{out})` or :math:`(C_{out}, H_{out}, W_{out})`, where\n\n          .. math::\n              H_{out} = \\left\\lfloor\\frac{H_{in}  + 2 \\times \\text{padding}[0] - \\text{dilation}[0]\n                        \\times (\\text{kernel\\_size}[0] - 1) - 1}{\\text{stride}[0]} + 1\\right\\rfloor\n\n          .. math::\n              W_{out} = \\left\\lfloor\\frac{W_{in}  + 2 \\times \\text{padding}[1] - \\text{dilation}[1]\n                        \\times (\\text{kernel\\_size}[1] - 1) - 1}{\\text{stride}[1]} + 1\\right\\rfloor\n\n    Attributes:\n        weight (Tensor): the learnable weights of the module of shape\n            :math:`(\\text{out\\_channels}, \\frac{\\text{in\\_channels}}{\\text{groups}},`\n            :math:`\\text{kernel\\_size[0]}, \\text{kernel\\_size[1]})`.\n            The values of these weights are sampled from\n            :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n            :math:`k = \\frac{groups}{C_\\text{in} * \\prod_{i=0}^{1}\\text{kernel\\_size}[i]}`\n        bias (Tensor):   the learnable bias of the module of shape\n            (out_channels). If :attr:`bias` is ``True``,\n            then the values of these weights are\n            sampled from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n            :math:`k = \\frac{groups}{C_\\text{in} * \\prod_{i=0}^{1}\\text{kernel\\_size}[i]}`\n\n    Examples:\n\n        >>> # With square kernels and equal stride\n        >>> m = nn.Conv2d(16, 33, 3, stride=2)\n        >>> # non-square kernels and unequal stride and with padding\n        >>> m = nn.Conv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2))\n        >>> # non-square kernels and unequal stride and with padding and dilation\n        >>> m = nn.Conv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2), dilation=(3, 1))\n        >>> input = torch.randn(20, 16, 50, 100)\n        >>> output = m(input)\n\n    .. _cross-correlation:\n        https://en.wikipedia.org/wiki/Cross-correlation\n\n    .. _link:\n        https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md\n    ",
+            "config": ""
+        }
+    },
+    "GETNucleotideRegionFinetuneExp": {
+        "name": "GETNucleotideRegionFinetuneExp",
+        "doc": null,
+        "config": {
+            "num_regions": 200,
+            "num_motif": 283,
+            "embed_dim": 768,
+            "num_layers": 12,
+            "num_heads": 12,
+            "dropout": 0.1,
+            "output_dim": 2,
+            "flash_attn": false,
+            "pool_method": "mean",
+            "distance_contact_map": {
+                "freezed": true
+            },
+            "motif_scanner": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            },
+            "atac_attention": {
+                "motif_dim": 639,
+                "pool_method": "sum"
+            },
+            "region_embed": {
+                "num_regions": 200,
+                "num_features": 283,
+                "embed_dim": 768
+            },
+            "encoder": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            },
+            "head_exp": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            },
+            "mask_token": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "std": 0.02
+            },
+            "loss": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            },
+            "metrics": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "layers": {},
+        "loss": {
+            "name": "GETLoss",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": {
+                        "_target_": "torch.nn.PoissonNLLLoss",
+                        "reduction": "mean",
+                        "log_input": false
+                    }
+                },
+                "weights": {
+                    "exp": 1.0
+                }
+            }
+        },
+        "metrics": {
+            "name": "RegressionMetrics",
+            "doc": null,
+            "config": {
+                "components": {
+                    "exp": [
+                        "pearson",
+                        "spearman",
+                        "r2"
+                    ]
+                }
+            }
+        },
+        "motif_scanner": {
+            "name": "MotifScanner",
+            "doc": "A motif encoder based on Conv1D, supporting initialized with PWM prior.\n\n    Architecture:\n    Conv1D(4, self.num_kernel, 29, padding='same', activation='relu')\n\n    Args:\n        num_motif (int): Number of motifs to scan.\n        include_reverse_complement (bool): Whether to include reverse complement motifs.\n        bidirectional_except_ctcf (bool): Whether to include reverse complement motifs for all motifs except CTCF.\n        motif_prior (bool): Whether to use motif prior.\n        learnable (bool): Whether to make the motif scanner learnable.\n    ",
+            "config": {
+                "num_motif": 637,
+                "include_reverse_complement": true,
+                "bidirectional_except_ctcf": true,
+                "motif_prior": true,
+                "learnable": true,
+                "has_bias": true
+            }
+        },
+        "conv_blocks": {
+            "name": "ModuleList",
+            "doc": "Holds submodules in a list.\n\n    :class:`~torch.nn.ModuleList` can be indexed like a regular Python list, but\n    modules it contains are properly registered, and will be visible by all\n    :class:`~torch.nn.Module` methods.\n\n    Args:\n        modules (iterable, optional): an iterable of modules to add\n\n    Example::\n\n        class MyModule(nn.Module):\n            def __init__(self):\n                super().__init__()\n                self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])\n\n            def forward(self, x):\n                # ModuleList can act as an iterable, or be indexed using ints\n                for i, l in enumerate(self.linears):\n                    x = self.linears[i // 2](x) + l(x)\n                return x\n    ",
+            "config": ""
+        },
+        "atac_attention": {
+            "name": "SplitPool",
+            "doc": "\n    Receive a tensor of shape (batch, length, dimension) and split along length\n    dimension based on a celltype_peak tensor of shape (batch, n_peak, 2) where\n    the second dimension is the start and end of the peak. The length dimension\n    can be decomposed into a sum of the peak lengths with each peak padded left\n    and right with 50bp and directly concatenated. Thus the boundary for the\n    splitting can be calculated by cumsum of the padded peak lengths. The output\n    is a tensor of shape (batch, n_peak, dimension).\n    ",
+            "config": {
+                "motif_dim": 639,
+                "pool_method": "sum"
+            }
+        },
+        "proj": {
+            "name": "Linear",
+            "doc": "Applies a linear transformation to the incoming data: :math:`y = xA^T + b`\n\n    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.\n\n    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.\n\n    Args:\n        in_features: size of each input sample\n        out_features: size of each output sample\n        bias: If set to ``False``, the layer will not learn an additive bias.\n            Default: ``True``\n\n    Shape:\n        - Input: :math:`(*, H_{in})` where :math:`*` means any number of\n          dimensions including none and :math:`H_{in} = \\text{in\\_features}`.\n        - Output: :math:`(*, H_{out})` where all but the last dimension\n          are the same shape as the input and :math:`H_{out} = \\text{out\\_features}`.\n\n    Attributes:\n        weight: the learnable weights of the module of shape\n            :math:`(\\text{out\\_features}, \\text{in\\_features})`. The values are\n            initialized from :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})`, where\n            :math:`k = \\frac{1}{\\text{in\\_features}}`\n        bias:   the learnable bias of the module of shape :math:`(\\text{out\\_features})`.\n                If :attr:`bias` is ``True``, the values are initialized from\n                :math:`\\mathcal{U}(-\\sqrt{k}, \\sqrt{k})` where\n                :math:`k = \\frac{1}{\\text{in\\_features}}`\n\n    Examples::\n\n        >>> m = nn.Linear(20, 30)\n        >>> input = torch.randn(128, 20)\n        >>> output = m(input)\n        >>> print(output.size())\n        torch.Size([128, 30])\n    ",
+            "config": ""
+        },
+        "region_embed": {
+            "name": "RegionEmbed",
+            "doc": "A simple region embedding transforming motif features to region embeddings.\n    ",
+            "config": {
+                "num_regions": 200,
+                "num_features": 283,
+                "embed_dim": 768
+            }
+        },
+        "encoder": {
+            "name": "GETTransformer",
+            "doc": "A transformer module for GET model.",
+            "config": {
+                "num_heads": "${model.cfg.num_heads}",
+                "embed_dim": "${model.cfg.embed_dim}",
+                "num_layers": "${model.cfg.num_layers}",
+                "drop_path_rate": "${model.cfg.dropout}",
+                "drop_rate": 0,
+                "attn_drop_rate": 0,
+                "use_mean_pooling": false,
+                "flash_attn": "${model.cfg.flash_attn}"
+            }
+        },
+        "head_exp": {
+            "name": "ExpressionHead",
+            "doc": "Expression head",
+            "config": {
+                "embed_dim": "${model.cfg.embed_dim}",
+                "output_dim": "${model.cfg.output_dim}",
+                "use_atac": false
+            }
+        }
+    }
+}

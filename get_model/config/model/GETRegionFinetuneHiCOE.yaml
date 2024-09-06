@@ -2,7 +2,7 @@ model:
   _target_: get_model.model.model.GETRegionFinetuneHiCOE
   cfg:
     num_regions: 200
-    num_motif: 284
+    num_motif: 285
     embed_dim: 768
     num_layers: 12
     num_heads: 12
@@ -25,10 +25,11 @@ model:
       attn_drop_rate: 0
       use_mean_pooling: false
       flash_attn: ${model.cfg.flash_attn}
-    header_hic:
+    head_hic:
       input_dim: 128
       hidden_dim: 64
       output_dim: 1
+      kernel_size: 3
     mask_token:
       embed_dim: ${model.cfg.embed_dim}
       std: 0.02

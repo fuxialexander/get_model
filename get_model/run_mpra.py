@@ -139,7 +139,7 @@ def main(cfg: DictConfig):
     model = MPRALitModel(cfg)
     dm = MPRADataModule(cfg)
     
-    trainer, _ = setup_trainer(cfg)
+    trainer = setup_trainer(cfg)
     
     predictions = trainer.predict(model, datamodule=dm)
     

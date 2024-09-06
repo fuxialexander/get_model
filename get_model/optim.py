@@ -136,8 +136,6 @@ def create_optimizer(
     if hasattr(args, "opt_betas") and args.opt_betas is not None:
         opt_args["betas"] = args.opt_betas
 
-    print("optimizer settings:", opt_args)
-
     opt_split = opt_lower.split("_")
     opt_lower = opt_split[-1]
     if opt_lower == "sgd" or opt_lower == "nesterov":

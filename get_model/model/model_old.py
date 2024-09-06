@@ -19,7 +19,28 @@ from get_model.model.pooling import (ATACSplitPool, ATACSplitPoolMaxNorm,
 from get_model.model.position_encoding import (AbsolutePositionalEncoding,
                                                CTCFPositionalEncoding)
 from get_model.model.transformer import GETTransformer
-from get_model.utils import freeze_layers, load_checkpoint, load_state_dict, remove_keys, rename_keys
+
+
+def rename_keys(state_dict):
+    new_state_dict = {}
+    for key in state_dict.keys():
+        new_key = key
+        if "blocks." in new_key:
+            new_key = new_key.replace("blocks.", "encoder.blocks.")
+        if "fc_norm." in new_key:
+            new_key = new_key.replace("fc_norm.", "encoder.norm.")
+        if "head." in new_key:
+            new_key = new_key.replace("head.", "head_exp.head.")
+        if "region_embed.proj." in new_key:
+            new_key = new_key.replace("region_embed.proj.", "region_embed.embed.")
+        new_state_dict[new_key] = state_dict[key]
+
+    if "region_embed.embed.weight" in new_state_dict:
+        # .unsqueeze(2)
+        new_state_dict["region_embed.embed.weight"] = new_state_dict[
+            "region_embed.embed.weight"
+        ]
+    return new_state_dict
 
 
 class BaseGETModel(nn.Module):

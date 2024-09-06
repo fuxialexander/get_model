@@ -385,6 +385,7 @@ class ContactMapHeadConfig(BaseConfig):
     input_dim: int = 128
     hidden_dim: int = 64
     output_dim: int = 1
+    kernel_size: int = 3
 
 
 class ContactMapHead(BaseModule):
@@ -393,10 +394,10 @@ class ContactMapHead(BaseModule):
     """
     def __init__(self, cfg, activation='softplus'):
         super().__init__(cfg)
-        self.conv1 = nn.Conv2d(cfg.input_dim, cfg.hidden_dim, 3, padding=1)
-        self.conv2 = nn.Conv2d(cfg.hidden_dim, cfg.hidden_dim, 3, padding=1)
-        self.conv3 = nn.Conv2d(cfg.hidden_dim, cfg.hidden_dim, 3, padding=1)
-        self.conv4 = nn.Conv2d(cfg.hidden_dim, cfg.output_dim, 3, padding=1)
+        self.conv1 = nn.Conv2d(cfg.input_dim, cfg.hidden_dim, cfg.kernel_size, padding=cfg.kernel_size//2)
+        self.conv2 = nn.Conv2d(cfg.hidden_dim, cfg.hidden_dim, cfg.kernel_size, padding=cfg.kernel_size//2)
+        self.conv3 = nn.Conv2d(cfg.hidden_dim, cfg.hidden_dim, cfg.kernel_size, padding=cfg.kernel_size//2)
+        self.conv4 = nn.Conv2d(cfg.hidden_dim, cfg.output_dim, cfg.kernel_size, padding=cfg.kernel_size//2)
         if activation == 'softplus':
             self.activation = nn.Softplus()
 

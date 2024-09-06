@@ -10,8 +10,12 @@ import numpy as np
 import pandas as pd
 import torch
 import zarr
-from caesar.io.gencode import Gencode
-from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
+
+try:
+    from caesar.io.gencode import Gencode
+    from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
+except ImportError:
+    pass
 from pyranges import PyRanges as pr
 from scipy.sparse import coo_matrix, csr_matrix, load_npz, vstack
 from torch.utils.data import Dataset
@@ -154,15 +158,20 @@ def apply_indel(arr, start, end, alt_sequence):
     return arr
 
 
-def get_hic_from_idx(hic, csv, start=None, end=None, resolution=5000, method="oe"):
+def get_hic_from_idx(hic, csv, start=None, end=None, resolution=5000, method="oe", normalization="SCALE"):
     # if from hic straw
     if hasattr(hic, "getMatrixZoomData"):
+        has_chr_suffix = 'chr' in hic.getChromosomes()[1].name
         if start is not None and end is not None:
             csv_region = csv.iloc[start:end]
         else:
             csv_region = csv
-        chrom = csv_region.iloc[0].Chromosome.replace("chr", "")
-        if chrom != csv_region.iloc[-1].Chromosome.replace("chr", ""):
+
+        if not has_chr_suffix:
+            chrom = csv_region.iloc[0].Chromosome.replace("chr", "")
+        else:
+            chrom = csv_region.iloc[0].Chromosome
+        if csv_region.Chromosome.nunique() > 1:
             return None
         start = csv_region.iloc[0].Start // resolution
         end = csv_region.iloc[-1].End // resolution + 1
@@ -171,8 +180,9 @@ def get_hic_from_idx(hic, csv, start=None, end=None, resolution=5000, method="oe
         hic_idx = np.array(
             [row.Start // resolution - start + 1 for _, row in csv_region.iterrows()]
         )
+
         mzd = hic.getMatrixZoomData(
-            "chr" + chrom, "chr" + chrom, method, "SCALE", "BP", resolution
+                chrom, chrom, method, normalization, "BP", resolution
         )
         numpy_matrix = mzd.getRecordsAsMatrix(
             start * resolution, end * resolution, start * resolution, end * resolution
@@ -3021,7 +3031,7 @@ class RegionDataset(Dataset):
     """
         PyTorch dataset class for cell type expression data.
         This is for backward compatibility with old (version 1) datasets.
-    Consider use InferenceRegionMotifDataset for new datasets.
+        Consider use RegionMotifDataset for new datasets.
 
         Args:
             root (str): Root directory path.
@@ -3046,6 +3056,8 @@ class RegionDataset(Dataset):
         transform: Optional[Callable] = None,
         data_type: str = "fetal",
         is_train: bool = True,
+        is_pretrain: bool = False,
+        keep_celltypes: str = "",
         leave_out_celltypes: str = "",
         leave_out_chromosomes: str = "",
         quantitative_atac: bool = False,
@@ -3057,6 +3069,8 @@ class RegionDataset(Dataset):
         self.root = root
         self.transform = transform
         self.is_train = is_train
+        self.is_pretrain = is_pretrain
+        self.keep_celltypes = keep_celltypes
         self.leave_out_celltypes = leave_out_celltypes
         self.leave_out_chromosomes = leave_out_chromosomes
         self.quantitative_atac = quantitative_atac
@@ -3065,11 +3079,12 @@ class RegionDataset(Dataset):
         self.mask_ratio = mask_ratio
         metadata_path = os.path.join(self.root, metadata_path)
         peaks, targets, tssidx = self._make_dataset(
-            False,
+            self.is_pretrain,
             data_type,
             self.root,
             metadata_path,
             num_region_per_sample,
+            keep_celltypes,
             leave_out_celltypes,
             leave_out_chromosomes,
             quantitative_atac,
@@ -3143,6 +3158,7 @@ Sampling step: {self.sampling_step}
     @staticmethod
     def _cell_splitter(
         celltype_metadata: pd.DataFrame,
+        keep_celltypes: str,
         leave_out_celltypes: str,
         datatypes: str,
         is_train: bool = True,
@@ -3162,27 +3178,24 @@ Sampling step: {self.sampling_step}
             Tuple[List[str], Dict[str, str], Dict[str, str]]: Tuple containing the list of target file IDs,
             cell labels dictionary, and datatype dictionary.
         """
+        celltype_list = sorted(celltype_metadata["celltype"].unique().tolist())
+        
+        if keep_celltypes != "" and keep_celltypes is not None:
+            keep_celltypes = keep_celltypes.split(",")
+            celltype_list = [
+                cell for cell in celltype_list if cell in keep_celltypes
+            ]
+            print(f"Keep cell types list: {celltype_list}")
+
         leave_out_celltypes = leave_out_celltypes.split(",")
         datatypes = datatypes.split(",")
 
-        celltype_list = sorted(celltype_metadata["celltype"].unique().tolist())
+        
         if is_train:
-            # TODO: revert this
-            # celltype_list = [
-            #     cell for cell in celltype_list if cell not in leave_out_celltypes]
-            # print(f"Train cell types list: {celltype_list}")
-            # print(f"Train data types list: {datatypes}")
-
-            celltype_list = (
-                leave_out_celltypes if leave_out_celltypes != [""] else celltype_list
-            )
-            print(
-                f"Using validation cell type for training!!! cell types list: {celltype_list}"
-            )
-            print(
-                f"Using validation cell type for training!!! data types list: {datatypes}"
-            )
-
+            celltype_list = [
+                cell for cell in celltype_list if cell not in leave_out_celltypes]
+            print(f"Train cell types list: {celltype_list}")
+            print(f"Train data types list: {datatypes}")
         else:
             celltype_list = (
                 leave_out_celltypes if leave_out_celltypes != [""] else celltype_list
@@ -3265,6 +3278,7 @@ Sampling step: {self.sampling_step}
         data_path: str,
         celltype_metadata_path: str,
         num_region_per_sample: int,
+        keep_celltypes: str,
         leave_out_celltypes: str,
         leave_out_chromosomes: str,
         quantitative_atac: bool,
@@ -3293,6 +3307,7 @@ Sampling step: {self.sampling_step}
         celltype_metadata = pd.read_csv(celltype_metadata_path, sep=",", dtype=str)
         file_id_list, cell_dict, datatype_dict = self._cell_splitter(
             celltype_metadata,
+            keep_celltypes,
             leave_out_celltypes,
             datatypes,
             is_train=is_train,
@@ -3300,8 +3315,8 @@ Sampling step: {self.sampling_step}
         )
         peak_list = []
         cell_list = []
-        target_list = [] if not is_pretrain else None
-        tssidx_list = [] if not is_pretrain else None
+        target_list = []
+        tssidx_list = []
 
         for file_id in file_id_list:
             cell_label = cell_dict[file_id]
@@ -3370,16 +3385,18 @@ Sampling step: {self.sampling_step}
 
                     peak_data_i = coo_matrix(peak_data_i)
 
-                    if not is_pretrain:
+                    if is_pretrain:
+                        target_i = coo_matrix(np.zeros((num_region_per_sample, 2)))
+                        tssidx_i = coo_matrix(np.zeros((num_region_per_sample, 1)))
+                    else:
                         target_i = coo_matrix(target_data[start_index:end_index])
                         tssidx_i = tssidx_data[start_index:end_index]
 
                     if peak_data_i.shape[0] == num_region_per_sample:
                         peak_list.append(peak_data_i)
                         cell_list.append(cell_label)
-                        if not is_pretrain:
-                            target_list.append(target_i)
-                            tssidx_list.append(tssidx_i)
+                        target_list.append(target_i)
+                        tssidx_list.append(tssidx_i)
 
         return peak_list, target_list, tssidx_list
 
@@ -3478,6 +3495,7 @@ class InferenceRegionDataset(RegionDataset):
         transform: Optional[Callable] = None,
         data_type: str = "fetal",
         is_train: bool = True,
+        keep_celltypes: str = "",
         leave_out_celltypes: str = "",
         leave_out_chromosomes: str = "",
         quantitative_atac: bool = False,
@@ -3518,6 +3536,7 @@ class InferenceRegionDataset(RegionDataset):
             self.root,
             metadata_path,
             num_region_per_sample,
+            keep_celltypes,
             leave_out_celltypes,
             leave_out_chromosomes,
             quantitative_atac,
@@ -3544,6 +3563,7 @@ class InferenceRegionDataset(RegionDataset):
         data_path: str,
         celltype_metadata_path: str,
         num_region_per_sample: int,
+        keep_celltypes: str,
         leave_out_celltypes: str,
         leave_out_chromosomes: str,
         quantitative_atac: bool,
@@ -3572,6 +3592,7 @@ class InferenceRegionDataset(RegionDataset):
         celltype_metadata = pd.read_csv(celltype_metadata_path, sep=",", dtype=str)
         file_id_list, cell_dict, datatype_dict = self._cell_splitter(
             celltype_metadata,
+            keep_celltypes,
             leave_out_celltypes,
             datatypes,
             is_train=is_train,
@@ -3581,8 +3602,8 @@ class InferenceRegionDataset(RegionDataset):
         cell_list = []
         chromosome_list = []
         peak_coord_list = []
-        target_list = [] if not is_pretrain else None
-        tssidx_list = [] if not is_pretrain else None
+        target_list = []
+        tssidx_list = []
         gene_list = []
         strand_list = []
         tss_peak_list = []
@@ -3752,6 +3773,7 @@ class RegionMotifConfig:
     root: str
     data: str
     celltype: str
+    normalize: bool = True
     motif_scaler: float = 1.0
     leave_out_motifs: Optional[str] = None
 
@@ -3766,6 +3788,7 @@ class RegionMotif:
         self.motif_scaler = cfg.motif_scaler
         self.leave_out_motifs = cfg.leave_out_motifs
         self.celltype = cfg.celltype
+        self.normalize = cfg.normalize
 
         if self.leave_out_motifs:
             self.leave_out_motifs = [int(m) for m in self.leave_out_motifs.split(",")]
@@ -3786,17 +3809,14 @@ class RegionMotif:
 
     def _load_celltype_data(self):
         self.atpm = self.dataset[f"atpm/{self.celltype}"][:]
-        self.expression_positive = self.dataset[f"expression_positive/{self.celltype}"][
-            :
-        ]
-        self.expression_negative = self.dataset[f"expression_negative/{self.celltype}"][
-            :
-        ]
-        self.tss = self.dataset[f"tss/{self.celltype}"][:]
-        gene_idx_info_index = self.dataset["gene_idx_info_index"][:]
-        gene_idx_info_name = self.dataset["gene_idx_info_name"][:]
-        gene_idx_info_strand = self.dataset["gene_idx_info_strand"][:]
-        self.gene_idx_info = pd.DataFrame(
+        if f"expression_positive/{self.celltype}" in self.dataset:  
+            self.expression_positive = self.dataset[f"expression_positive/{self.celltype}"][:]
+            self.expression_negative = self.dataset[f"expression_negative/{self.celltype}"][:]
+            self.tss = self.dataset[f"tss/{self.celltype}"][:]
+            gene_idx_info_index = self.dataset["gene_idx_info_index"][:]
+            gene_idx_info_name = self.dataset["gene_idx_info_name"][:]
+            gene_idx_info_strand = self.dataset["gene_idx_info_strand"][:]
+            self.gene_idx_info = pd.DataFrame(
             {
                 "index": gene_idx_info_index,
                 "gene_name": gene_idx_info_name,
@@ -3816,11 +3836,24 @@ class RegionMotif:
     def num_motifs(self):
         return len(self.motif_names)
 
-    def normalize_data(self):
+    @property
+    def normalized_data(self):
+        if not self.normalize:
+            return self.data
+        if hasattr(self, "_normalized_data"):
+            return self._normalized_data
         max_values = self.data.max(axis=0)
         normalized_data = self.data / (max_values * self.motif_scaler)
         normalized_data[normalized_data > 1] = 1
+        self._normalized_data = normalized_data
         return normalized_data
+
+    @property
+    def normalizing_factor(self):
+        if not self.normalize:
+            return 1
+        max_values = self.data.max(axis=0)
+        return max_values * self.motif_scaler
 
     def __repr__(self):
         return f"RegionMotif(num_peaks={self.num_peaks}, num_motifs={self.num_motifs}, celltype={self.celltype})"
@@ -3833,27 +3866,66 @@ class RegionMotifDataset(Dataset):
         celltypes: str,
         transform=None,
         quantitative_atac: bool = False,
+        normalize: bool = True,
         sampling_step: int = 50,
         num_region_per_sample: int = 1000,
         leave_out_chromosomes: str | None = None,
         leave_out_celltypes: str | None = None,
         is_train: bool = True,
         mask_ratio: float = 0.0,
+        hic_path: str = None,
+        hic_resolution: int = 5000,
+        hic_method: str = "oe",
+        hic_normalization: str = "KR",
     ):
         self.zarr_path = zarr_path
         self.celltypes = celltypes.split(",")
         self.transform = transform
         self.quantitative_atac = quantitative_atac
+        self.normalize = normalize
         self.sampling_step = sampling_step
         self.num_region_per_sample = num_region_per_sample
         self.leave_out_chromosomes = leave_out_chromosomes if leave_out_chromosomes else []
         self.leave_out_celltypes = leave_out_celltypes.split(",") if leave_out_celltypes else []
         self.is_train = is_train
         self.mask_ratio = mask_ratio
-
+        self.hic_path = hic_path
         self.region_motifs = self._load_region_motifs()
         self.sample_indices = []
         self.setup()
+        if self.hic_path:
+            self.hic_obj = self._load_hic()
+            self.hic_resolution = hic_resolution
+            self.hic_method = hic_method
+            self.hic_normalization = hic_normalization
+        
+
+    def _load_hic(self):
+        try:
+            if ".hic" in self.hic_path:
+                try:
+                    import hicstraw
+
+                    hic_obj = hicstraw.HiCFile(self.hic_path)
+                except:
+                    logging.warning(
+                        "hicstraw is not installed, cannot load hic data, or the hic file is not found"
+                    )
+                    hic_obj = None
+            elif "cool" in self.hic_path:
+                try:
+                    import cooler
+
+                    hic_obj = cooler.Cooler(self.hic_path + "::/resolutions/5000")
+                except:
+                    logging.warning(
+                        "cooler is not installed, cannot load hic data, or the hic file is not found"
+                    )
+                    hic_obj = None
+        except:
+            logging.warning("hic file is not found, or the file type is not supported")
+            hic_obj = None
+        return hic_obj
 
     def _load_region_motifs(self) -> Dict[str, RegionMotif]:
         region_motifs = {}
@@ -3874,6 +3946,7 @@ class RegionMotifDataset(Dataset):
                 root=os.path.dirname(self.zarr_path),
                 data=os.path.basename(self.zarr_path),
                 celltype=celltype,
+                normalize=self.normalize,
             )
             region_motifs[celltype] = RegionMotif(cfg)
         return region_motifs
@@ -3907,6 +3980,39 @@ class RegionMotifDataset(Dataset):
                     if end_index < peaks.shape[0]:
                         self.sample_indices.append((celltype, start_index, end_index))
 
+    def cache_hic_i(self, index):
+        celltype, start_index, end_index = self.sample_indices[index]
+        region_motif = self.region_motifs[celltype]
+        peaks_i = region_motif.peaks.iloc[start_index:end_index]
+        region_motif_i = region_motif.normalized_data[start_index:end_index]
+        hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization=self.hic_normalization, method=self.hic_method, resolution=self.hic_resolution)
+        if hic_data is not None:
+            hic_data = hic_data.astype(np.float32)
+        else:
+            hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
+        return hic_data
+    
+    def cache_hic(self):
+        z = zarr.open(self.zarr_path, mode="a")
+        if f"hic_cache/{self.is_train}" in z and z.attrs['celltype'] == self.celltypes and z.attrs['quantitative_atac'] == self.quantitative_atac and z.attrs['num_region_per_sample'] == self.num_region_per_sample and z.attrs['leave_out_celltypes'] == self.leave_out_celltypes and z.attrs['leave_out_chromosomes'] == self.leave_out_chromosomes and z.attrs['is_train'] == self.is_train and z.attrs['hic_path'] == self.hic_path:
+            hic_cache = z[f"hic_cache/{self.is_train}"][:]
+            self.hic_cache = hic_cache
+            return
+        else:
+            self.hic_cache = []
+            for index in tqdm(range(len(self.sample_indices))):
+                self.hic_cache.append(self.cache_hic_i(index))
+            self.hic_cache = np.stack(self.hic_cache)
+            # save to zarr
+            z.create_dataset(f"hic_cache/{self.is_train}", data=self.hic_cache, overwrite=True, chunks=(1, self.num_region_per_sample, self.num_region_per_sample))
+            z.attrs['celltype'] = self.celltypes
+            z.attrs['quantitative_atac'] = self.quantitative_atac
+            z.attrs['num_region_per_sample'] = self.num_region_per_sample
+            z.attrs['leave_out_celltypes'] = self.leave_out_celltypes
+            z.attrs['leave_out_chromosomes'] = self.leave_out_chromosomes
+            z.attrs['is_train'] = self.is_train
+            z.attrs['hic_path'] = self.hic_path
+
     def __len__(self):
         return len(self.sample_indices)
 
@@ -3914,24 +4020,32 @@ class RegionMotifDataset(Dataset):
         celltype, start_index, end_index = self.sample_indices[index]
         region_motif = self.region_motifs[celltype]
 
-        region_motif_i = region_motif.normalize_data()[start_index:end_index]
+        region_motif_i = region_motif.normalized_data[start_index:end_index]
         peaks_i = region_motif.peaks.iloc[start_index:end_index]
-
-        expression_positive = region_motif.expression_positive[start_index:end_index]
-        expression_negative = region_motif.expression_negative[start_index:end_index]
-        tss = region_motif.tss[start_index:end_index]
         atpm = region_motif.atpm[start_index:end_index]
+
+        if hasattr(region_motif, "expression_positive"):
+            expression_positive = region_motif.expression_positive[start_index:end_index]
+            expression_negative = region_motif.expression_negative[start_index:end_index]
+            tss = region_motif.tss[start_index:end_index]
+            target_data = np.column_stack((expression_positive, expression_negative))
+            target_i = coo_matrix(target_data)
+        else:
+            expression_positive = None
+            expression_negative = None
+            tss = None
+            target_i = None
 
         if not self.quantitative_atac:
             region_motif_i = np.concatenate(
                 [region_motif_i, np.ones((region_motif_i.shape[0], 1))], axis=1
             )
-        else:
+        elif self.normalize:
             normalized_atpm = atpm.reshape(-1, 1) / atpm.max()
             region_motif_i = np.concatenate([region_motif_i, normalized_atpm], axis=1)
+        else:
+            region_motif_i = np.concatenate([region_motif_i, atpm.reshape(-1, 1)], axis=1)
 
-        target_data = np.column_stack((expression_positive, expression_negative))
-        target_i = coo_matrix(target_data)
 
         if self.mask_ratio > 0:
             mask = np.random.choice(
@@ -3945,14 +4059,27 @@ class RegionMotifDataset(Dataset):
                 region_motif_i, mask, target_i
             )
 
+        if self.hic_path:
+            if hasattr(self, "hic_cache"):
+                hic_data = self.hic_cache[index]
+            else:
+                hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization=self.hic_normalization, method=self.hic_method, resolution=self.hic_resolution)
+                if hic_data is not None:
+                    hic_data = hic_data.astype(np.float32)
+                else:
+                    hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
+        else:
+            hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
+
         data = {
             "region_motif": region_motif_i.astype(np.float32),
-            "mask": mask,
+            "mask": mask if mask is not None else np.zeros((region_motif_i.shape[0], 2)),
             "atpm": atpm.reshape(-1, 1),
             "chromosome": peaks_i["Chromosome"].values[0],
             "peak_coord": peaks_i[["Start", "End"]].values,
-            "exp_label": target_i.toarray().astype(np.float32),
+            "exp_label": target_i.toarray().astype(np.float32) if target_i is not None else np.zeros((region_motif_i.shape[0], 2)),
             "celltype": celltype,
+            "hic_matrix": hic_data,
         }
 
         return data
@@ -4045,9 +4172,8 @@ class InferenceRegionMotifDataset(RegionMotifDataset):
         start_idx = sample_info["start_idx"]
         end_idx = sample_info["end_idx"]
         region_motif = self.region_motifs[celltype]
-
-        # Get the data for this region
-        region_motif_i = region_motif.normalize_data()[start_idx:end_idx]
+        region_motif_i = region_motif.data[start_idx:end_idx]
+        peaks_i = region_motif.peaks.iloc[start_idx:end_idx]
         expression_positive = region_motif.expression_positive[start_idx:end_idx]
         expression_negative = region_motif.expression_negative[start_idx:end_idx]
         tss = region_motif.tss[start_idx:end_idx]
@@ -4149,3 +4275,83 @@ class InferenceEverythingDataset(InferenceReferenceRegionDataset):
         rrd_item = super().__getitem__(index)
         zarr_item = self.zarr_dataset[index]
         return {"rrd": rrd_item, "zarr": zarr_item}
+
+@dataclass
+class SequenceMotifConfig:
+    sequence_zarr: str
+    motif_zarr: str
+    transform: Optional[Callable] = None
+    is_train: bool = True
+    sequence_length: int = 512
+    leave_out_chromosomes: str | None = None
+
+
+class SequenceMotifDataset(Dataset):
+    def __init__(self, sequence_zarr: str, motif_zarr: str, transform=None, is_train=True, sequence_length=512, leave_out_chromosomes: str | None = None, chunk_size=100000):
+        self.sequence_dataset = DenseZarrIO(sequence_zarr, dtype="int8", mode="r")
+        self.motif_dataset = DenseZarrIO(motif_zarr, mode='r')
+        self.transform = transform
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.common_chroms = np.intersect1d(self.sequence_dataset.chrom_names, self.motif_dataset.chrom_names)
+        self.is_train = is_train
+        self.sequence_length = sequence_length
+        self.chunk_size = chunk_size
+        self.current_chunk = None
+        self.current_chrom = None
+        self.current_chunk_start = None
+        self.sequence_dataset.load_to_memory_dense()
+
+        self.setup()
+    
+    def __len__(self):
+        if self.is_train:
+            return 12800
+        else:
+            return 1280
+    
+    def setup(self):
+        input_chromosomes = _chromosome_splitter(
+            self.common_chroms, self.leave_out_chromosomes, self.is_train
+        )
+        max_indices = {}
+        for chrom in input_chromosomes:
+            max_indices[chrom] = (self.sequence_dataset.chrom_sizes[chrom] - self.sequence_length)//self.sequence_length
+        
+        sample_size = 0
+        for chrom in input_chromosomes:
+            sample_size += max_indices[chrom]
+        self.max_indices = max_indices
+        self.sample_size = sample_size
+
+    def load_chunk(self, chrom, chunk_start):
+        self.current_chrom = chrom
+        self.current_chunk_start = chunk_start
+        chunk_end = min(chunk_start + self.chunk_size, self.sequence_dataset.chrom_sizes[chrom])
+        self.current_chunk = {
+            "sequence": self.sequence_dataset.get_track(chrom, chunk_start, chunk_end),
+            "motif": self.motif_dataset.get_track(chrom, chunk_start, chunk_end)
+        }
+
+    def __getitem__(self, index):
+        for chrom in self.max_indices:
+            if index < self.max_indices[chrom]:
+                break
+            index -= self.max_indices[chrom]
+        
+        i = index
+        start_pos = i * self.sequence_length
+        chunk_start = (start_pos // self.chunk_size) * self.chunk_size
+
+        if self.current_chrom != chrom or self.current_chunk_start != chunk_start:
+            self.load_chunk(chrom, chunk_start)
+
+        chunk_offset = start_pos - self.current_chunk_start
+        sequence = self.current_chunk["sequence"][chunk_offset:chunk_offset + self.sequence_length]
+        motif = self.current_chunk["motif"][chunk_offset:chunk_offset + self.sequence_length]
+
+        if self.transform:
+            return self.transform({"sequence": sequence, "motif": motif})
+        return {"sequence": sequence, "motif": motif}
+    
+    def __repr__(self):
+        return f"SequenceMotifDataset(sequence_zarr={self.sequence_dataset.zarr_path}, motif_zarr={self.motif_dataset.zarr_path}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes}, chunk_size={self.chunk_size})"

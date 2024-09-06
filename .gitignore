@@ -32,11 +32,11 @@ multirun
 test/abc
 *.txt
 *pdf
-*png
 *bw
 *tar
 *bw
 *tsv
 experiments
+evals/*/*png
 
 tutorials/*.zarr
