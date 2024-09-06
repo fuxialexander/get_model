@@ -32,7 +32,7 @@ training:
   add_lr_monitor: true
 
 optimizer:
-  lr: 0.00001
+  lr: 0.0001
   min_lr: 0.00001
   weight_decay: 0.05
   opt: "adamw"
@@ -41,7 +41,7 @@ optimizer:
 
 run:
   project_name: "h1esc_hic_region_zarr"
-  run_name: "debug_oe"
+  run_name: "debug_observed_larger_lr_adamw"
 
 task:
   layer_names: ['region_embed']
@@ -50,7 +50,7 @@ task:
 
 
 finetune:
-  resume_ckpt: /home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
+  # resume_ckpt: /home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
   pretrain_checkpoint: false
   strict: true
   use_lora: false

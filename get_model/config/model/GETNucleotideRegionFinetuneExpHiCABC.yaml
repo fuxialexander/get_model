@@ -39,11 +39,11 @@ model:
       embed_dim: ${model.cfg.embed_dim}
       output_dim: ${model.cfg.output_dim}
       use_atac: false
-    header_hic:
+    head_hic:
       input_dim: 128
       hidden_dim: 64
       output_dim: 1
-    header_abc:
+    head_abc:
       input_dim: 128
       hidden_dim: 64
       output_dim: 1

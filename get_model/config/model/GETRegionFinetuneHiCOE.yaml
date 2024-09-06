@@ -25,7 +25,7 @@ model:
       attn_drop_rate: 0
       use_mean_pooling: false
       flash_attn: ${model.cfg.flash_attn}
-    header_hic:
+    head_hic:
       input_dim: 128
       hidden_dim: 64
       output_dim: 1

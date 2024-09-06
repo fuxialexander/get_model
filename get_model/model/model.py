@@ -699,76 +699,6 @@ class GETRegionFinetuneATAC(BaseGETModel):
 
 
 @dataclass
-class GETRegionFinetuneHiCModelConfig(BaseGETModelConfig):
-    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
-    encoder: EncoderConfig = field(default_factory=EncoderConfig)
-    distance_contact_map: DistanceContactHeadConfig = field(
-        default_factory=DistanceContactHeadConfig)
-    head_hic: ContactMapHeadConfig = field(
-        default_factory=ContactMapHeadConfig)
-
-
-class GETRegionFinetuneHiC(BaseGETModel):
-    def __init__(self, cfg: GETRegionFinetuneHiCModelConfig):
-        super().__init__(cfg)
-        self.region_embed = RegionEmbed(cfg.region_embed)
-        self.encoder = GETTransformer(**cfg.encoder)
-        self.head_hic = HiCHead(cfg.head_hic)
-        self.proj_distance = nn.Linear(cfg.embed_dim, 128)
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
-        self.distance_contact_map = DistanceContactHead(
-            cfg.distance_contact_map)
-        self.distance_contact_map.eval()
-
-        self.apply(self._init_weights)
-
-    def get_input(self, batch, perturb=False):
-        peak_coord = batch['peak_coord']
-        peak_coord_mean = peak_coord[:, :, 0]
-        # pair-wise distance using torch
-        # Add new dimensions to create column and row vectors
-        peak_coord_mean_col = peak_coord_mean.unsqueeze(
-            2)  # Adds a new axis (column vector)
-        peak_coord_mean_row = peak_coord_mean.unsqueeze(
-            1)  # Adds a new axis (row vector)
-
-        # Compute the pairwise difference
-        distance = torch.log10(
-            (peak_coord_mean_col - peak_coord_mean_row).abs() + 1).unsqueeze(1)
-        region_model = batch['region_motif'].clone()
-        batch['distance_map'] = distance
-        # region_model[:, :, -1] = 1 # set atac to binary
-        return {
-            'region_motif': region_model,
-            'distance_map': distance,
-        }
-
-    def forward(self, region_motif, distance_map):
-        x = self.region_embed(region_motif)
-        B, N, C = x.shape
-        cls_tokens = self.cls_token.expand(B, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-        x, fused_distance_map, _ = self.encoder(x, distance_map)
-        x = x[:, 1:]
-        fused_distance_map = self.proj_distance(
-            fused_distance_map).transpose(1, 3).transpose(2, 3)
-        hic = self.head_hic(fused_distance_map).squeeze(1)
-        return hic
-
-    def before_loss(self, output, batch):
-
-        pred = {'hic': output.squeeze(-1)}
-        obs = {'hic': batch['hic_matrix'].float()}
-        return pred, obs
-
-    def generate_dummy_data(self):
-        B, R, M = 2, 900, 283
-        return {
-            'region_motif': torch.randn(B, R, M).float().abs(),
-        }
-
-
-@dataclass
 class DistanceContactMapModelConfig(BaseGETModelConfig):
     pass
 
@@ -838,9 +768,9 @@ class GETRegionFinetuneExpHiCABCConfig(BaseGETModelConfig):
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     head_exp: ExpressionHeadConfig = field(
         default_factory=ExpressionHeadConfig)
-    header_hic: ContactMapHeadConfig = field(
+    head_hic: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
-    header_abc: ContactMapHeadConfig = field(
+    head_abc: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
     distance_contact_map: DistanceContactHeadConfig = field(
         default_factory=DistanceContactHeadConfig)
@@ -852,8 +782,8 @@ class GETRegionFinetuneExpHiCABC(BaseGETModel):
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformerWithContactMap(**cfg.encoder)
         self.head_exp = ExpressionHead(cfg.head_exp)
-        self.hic_header = ContactMapHead(cfg.header_hic)
-        self.abc_header = ContactMapHead(cfg.header_abc)
+        self.head_hic = ContactMapHead(cfg.head_hic)
+        self.head_abc = ContactMapHead(cfg.head_abc)
         self.distance_contact_map = DistanceContactHead(
             cfg.distance_contact_map)
         self.distance_contact_map.eval()
@@ -894,8 +824,8 @@ class GETRegionFinetuneExpHiCABC(BaseGETModel):
         exp = nn.Softplus()(self.head_exp(x))
         fused_distance_map = self.proj_distance(
             fused_distance_map).transpose(1, 3).transpose(2, 3)
-        hic = self.hic_header(fused_distance_map).squeeze(1)
-        abc = self.abc_header(fused_distance_map).squeeze(1)
+        hic = self.head_hic(fused_distance_map).squeeze(1)
+        abc = self.head_abc(fused_distance_map).squeeze(1)
         return exp, hic, abc
 
     def before_loss(self, output, batch):
@@ -942,7 +872,7 @@ class GETRegionFinetuneExpHiCABC(BaseGETModel):
 class GETRegionFinetuneHiCOEConfig(BaseGETModelConfig):
     region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
-    header_hic: ContactMapHeadConfig = field(
+    head_hic: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
     distance_contact_map: DistanceContactHeadConfig = field(
         default_factory=DistanceContactHeadConfig)
@@ -953,7 +883,7 @@ class GETRegionFinetuneHiCOE(BaseGETModel):
         super().__init__(cfg)
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformer(**cfg.encoder)
-        self.hic_header = ContactMapHead(cfg.header_hic, activation='none')
+        self.head_hic = ContactMapHead(cfg.head_hic, activation='none')
         self.distance_contact_map = DistanceContactHead(
             cfg.distance_contact_map)
         self.distance_contact_map.eval()
@@ -1001,7 +931,7 @@ class GETRegionFinetuneHiCOE(BaseGETModel):
         x = self.proj_distance(
             x).transpose(1, 3).transpose(2, 3)
 
-        hic = self.hic_header(x).squeeze(1)
+        hic = self.head_hic(x).squeeze(1)
         return hic
 
     def before_loss(self, output, batch):
@@ -1054,9 +984,9 @@ class GETRegionFinetuneExpHiCAxialModelConfig(BaseGETModelConfig):
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     head_exp: ExpressionHeadConfig = field(
         default_factory=ExpressionHeadConfig)
-    header_hic: ContactMapHeadConfig = field(
+    head_hic: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
-    header_abc: ContactMapHeadConfig = field(
+    head_abc: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
     distance_contact_map: DistanceContactHeadConfig = field(
         default_factory=DistanceContactHeadConfig)
@@ -1068,8 +998,8 @@ class GETRegionFinetuneExpHiCAxial(BaseGETModel):
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformerWithContactMapAxial(**cfg.encoder)
         self.head_exp = ExpressionHead(cfg.head_exp)
-        # self.hic_header = ContactMapHead(cfg.header_hic)
-        # self.abc_header = ContactMapHead(cfg.header_abc)
+        # self.head_hic = ContactMapHead(cfg.head_hic)
+        # self.head_abc = ContactMapHead(cfg.head_abc)
         self.distance_contact_map = DistanceContactHead(
             cfg.distance_contact_map)
         self.distance_contact_map.eval()
@@ -1110,8 +1040,8 @@ class GETRegionFinetuneExpHiCAxial(BaseGETModel):
         exp = nn.Softplus()(self.head_exp(x))
         fused_distance_map = self.proj_distance(
             fused_distance_map)  # .transpose(1, 3).transpose(2, 3)
-        # hic = self.hic_header(fused_distance_map).squeeze(1)
-        # abc = self.abc_header(fused_distance_map).squeeze(1)
+        # hic = self.head_hic(fused_distance_map).squeeze(1)
+        # abc = self.head_abc(fused_distance_map).squeeze(1)
         return exp, fused_distance_map.squeeze(3)
 
     def before_loss(self, output, batch):
@@ -1426,9 +1356,9 @@ class GETNucleotideRegionFinetuneExpHiCAxialModelConfig(BaseGETModelConfig):
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     head_exp: ExpressionHeadConfig = field(
         default_factory=ExpressionHeadConfig)
-    header_hic: ContactMapHeadConfig = field(
+    head_hic: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
-    header_abc: ContactMapHeadConfig = field(
+    head_abc: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
     distance_contact_map: DistanceContactHeadConfig = field(
         default_factory=DistanceContactHeadConfig)
@@ -1734,9 +1664,9 @@ class GETNucleotideRegionFinetuneExpHiCABCConfig(BaseGETModelConfig):
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     head_exp: ExpressionHeadConfig = field(
         default_factory=ExpressionHeadConfig)
-    header_hic: ContactMapHeadConfig = field(
+    head_hic: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
-    header_abc: ContactMapHeadConfig = field(
+    head_abc: ContactMapHeadConfig = field(
         default_factory=ContactMapHeadConfig)
     distance_contact_map: DistanceContactHeadConfig = field(
         default_factory=DistanceContactHeadConfig)
@@ -1761,8 +1691,8 @@ class GETNucleotideRegionFinetuneExpHiCABC(BaseGETModel):
         self.region_embed.eval()
         self.encoder = GETTransformerWithContactMap(**cfg.encoder)
         self.head_exp = ExpressionHead(cfg.head_exp)
-        self.hic_header = ContactMapHead(cfg.header_hic)
-        self.abc_header = ContactMapHead(cfg.header_abc)
+        self.head_hic = ContactMapHead(cfg.head_hic)
+        self.head_abc = ContactMapHead(cfg.head_abc)
         self.distance_contact_map = DistanceContactHead(
             cfg.distance_contact_map)
         self.distance_contact_map.eval()
@@ -1815,8 +1745,8 @@ class GETNucleotideRegionFinetuneExpHiCABC(BaseGETModel):
         exp = nn.Softplus()(self.head_exp(x))
         fused_distance_map = self.proj_distance(
             fused_distance_map).transpose(1, 3).transpose(2, 3)
-        hic = self.hic_header(fused_distance_map).squeeze(1)
-        abc = self.abc_header(fused_distance_map).squeeze(1)
+        hic = self.head_hic(fused_distance_map).squeeze(1)
+        abc = self.head_abc(fused_distance_map).squeeze(1)
         return exp, hic, abc, motif
 
     def before_loss(self, output, batch):
