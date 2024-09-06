@@ -18,6 +18,9 @@ dataset:
     sampling_step: 100
     mask_ratio: 0.0
     hic_path: /home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic
+    hic_resolution: 5000
+    hic_method: "oe"
+    hic_normalization: "KR"
 
 training:
   save_ckpt_freq: 1

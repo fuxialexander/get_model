@@ -3842,6 +3842,9 @@ class RegionMotifDataset(Dataset):
         is_train: bool = True,
         mask_ratio: float = 0.0,
         hic_path: str = None,
+        hic_resolution: int = 5000,
+        hic_method: str = "oe",
+        hic_normalization: str = "KR",
     ):
         self.zarr_path = zarr_path
         self.celltypes = celltypes.split(",")
@@ -3859,7 +3862,9 @@ class RegionMotifDataset(Dataset):
         self.setup()
         if self.hic_path:
             self.hic_obj = self._load_hic()
-            # self.cache_hic()x
+            self.hic_resolution = hic_resolution
+            self.hic_method = hic_method
+            self.hic_normalization = hic_normalization
         
 
     def _load_hic(self):
@@ -3946,7 +3951,7 @@ class RegionMotifDataset(Dataset):
         region_motif = self.region_motifs[celltype]
         peaks_i = region_motif.peaks.iloc[start_index:end_index]
         region_motif_i = region_motif.normalize_data[start_index:end_index]
-        hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization="KR", method='oe', resolution=5000)
+        hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization=self.hic_normalization, method=self.hic_method, resolution=self.hic_resolution)
         if hic_data is not None:
             hic_data = hic_data.astype(np.float32)
         else:
@@ -4023,7 +4028,7 @@ class RegionMotifDataset(Dataset):
             if hasattr(self, "hic_cache"):
                 hic_data = self.hic_cache[index]
             else:
-                hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization="KR", method='oe', resolution=5000)
+                hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization=self.hic_normalization, method=self.hic_method, resolution=self.hic_resolution)
                 if hic_data is not None:
                     hic_data = hic_data.astype(np.float32)
                 else:
