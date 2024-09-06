@@ -105,9 +105,9 @@ class RegionLitModel(LitModel):
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
 
-    def optimizer_step(self, epoch: int, batch_idx: int, optimizer: Optimizer | LightningOptimizer, optimizer_closure: Callable[[], Any] | None = None) -> None:
-        self.lr_schedulers().step()
-        return super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+    # def optimizer_step(self, epoch: int, batch_idx: int, optimizer: Optimizer | LightningOptimizer, optimizer_closure: Callable[[], Any] | None = None) -> None:
+    #     self.lr_schedulers().step()
+    #     return super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
 
     def validation_step(self, batch, batch_idx):
         loss, pred, obs = self._shared_step(batch, batch_idx, stage='val')
@@ -336,44 +336,44 @@ class RegionLitModel(LitModel):
 
 
 
-    def configure_optimizers(self):
-        if hasattr(self.model.cfg, 'encoder'):
-            num_layers = self.model.cfg.encoder.num_layers
-        else:
-            num_layers = 0
-        assigner = LayerDecayValueAssigner(
-            list(0.75 ** (num_layers + 1 - i) for i in range(num_layers + 2)))
+    # def configure_optimizers(self):
+    #     if hasattr(self.model.cfg, 'encoder'):
+    #         num_layers = self.model.cfg.encoder.num_layers
+    #     else:
+    #         num_layers = 0
+    #     assigner = LayerDecayValueAssigner(
+    #         list(0.75 ** (num_layers + 1 - i) for i in range(num_layers + 2)))
 
-        if assigner is not None:
-            print("Assigned values = %s" % str(assigner.values))
-        skip_weight_decay_list = self.model.no_weight_decay()
-        print("Skip weight decay list: ", skip_weight_decay_list)
+    #     if assigner is not None:
+    #         print("Assigned values = %s" % str(assigner.values))
+    #     skip_weight_decay_list = self.model.no_weight_decay()
+    #     print("Skip weight decay list: ", skip_weight_decay_list)
 
-        optimizer = create_optimizer(self.cfg.optimizer, self.model,
-                                     skip_list=skip_weight_decay_list,
-                                     get_num_layer=assigner.get_layer_id if assigner is not None else None,
-                                     get_layer_scale=assigner.get_scale if assigner is not None else None
-                                     )
+    #     optimizer = create_optimizer(self.cfg.optimizer, self.model,
+    #                                  skip_list=skip_weight_decay_list,
+    #                                  get_num_layer=assigner.get_layer_id if assigner is not None else None,
+    #                                  get_layer_scale=assigner.get_scale if assigner is not None else None
+    #                                  )
 
-        data_size = len(self.dm.dataset_train)
-        num_training_steps_per_epoch = (
-            data_size // self.cfg.machine.batch_size // self.cfg.machine.num_devices
-        )
-        schedule = cosine_scheduler(
-            base_value=self.cfg.optimizer.lr,
-            final_value=self.cfg.optimizer.min_lr,
-            epochs=self.cfg.training.epochs+1,
-            niter_per_ep=num_training_steps_per_epoch,
-            warmup_epochs=self.cfg.training.warmup_epochs,
-            start_warmup_value=self.cfg.optimizer.min_lr,
-            warmup_steps=-1
-        )
-        # step based lr scheduler
-        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lr_lambda=lambda step: schedule[step]/self.cfg.optimizer.lr,
-        )
-        return [optimizer], [lr_scheduler]
+    #     data_size = len(self.dm.dataset_train)
+    #     num_training_steps_per_epoch = (
+    #         data_size // self.cfg.machine.batch_size // self.cfg.machine.num_devices
+    #     )
+    #     schedule = cosine_scheduler(
+    #         base_value=self.cfg.optimizer.lr,
+    #         final_value=self.cfg.optimizer.min_lr,
+    #         epochs=self.cfg.training.epochs+1,
+    #         niter_per_ep=num_training_steps_per_epoch,
+    #         warmup_epochs=self.cfg.training.warmup_epochs,
+    #         start_warmup_value=self.cfg.optimizer.min_lr,
+    #         warmup_steps=-1
+    #     )
+    #     # step based lr scheduler
+    #     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+    #         optimizer,
+    #         lr_lambda=lambda step: schedule[step]/self.cfg.optimizer.lr,
+    #     )
+    #     return [optimizer], [lr_scheduler]
 
 
 class RegionZarrDataModule(RegionDataModule):
