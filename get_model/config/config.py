@@ -241,6 +241,7 @@ class TrainingConfig:
     accumulate_grad_batches: int = 1
     clip_grad: float | None = None
     use_fp16: bool = True
+    add_lr_monitor: bool = False
 
 
 @dataclass
