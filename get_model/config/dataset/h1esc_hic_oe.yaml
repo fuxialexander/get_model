@@ -1,0 +1,26 @@
+zarr_dirs:
+  - "/home/xf2217/Projects/4dn_h1esc/dense/4dn_h1esc_dense.zarr" # Path to the Zarr directory containing ATAC-seq data for ENCODE hg38
+keep_celltypes: "H1ESC.4dn_h1esc.4dn_h1esc.max" # Specific cell type (K562) to keep in the dataset
+leave_out_celltypes: null # No cell types are left out (all cell types are included)
+leave_out_chromosomes: "chr10,chr11" # Chromosomes 10 and 11 will be excluded from the dataset
+peak_name: "peaks_q0.05_tissue_open" # Name of the peak dataset to use (fetal joint tissue open chromatin regions with q-value < 0.05)
+dataset_size: 40960 # Total number of samples in the training dataset, only useful in 'nucleotide' mode
+eval_dataset_size: 512 # Number of samples in the evaluation dataset, only useful in 'nucleotide' mode
+additional_peak_columns: # Additional columns to include for each peak
+  ["aTPM"]
+center_expand_target: 500 # No centering or expansion of peaks (use original peak coordinates)
+n_peaks_lower_bound: 1 # Minimum number of peaks per sample
+n_peaks_upper_bound: 200 # Maximum number of peaks per sample
+negative_peak_name: null # No negative peak set is used
+negative_peak_ratio: 0 # No negative peaks are included
+random_shift_peak: 0 # No random shifting of peak positions
+max_peak_length: 5000 # Maximum allowed length for a peak (in base pairs)
+peak_count_filter: 0 # Minimum count threshold for including a peak
+use_insulation: False # Do not use insulation data for sampling
+preload_count: 10 # Number of data chunks to preload, only useful in 'nucleotide' mode, obsolete parameters
+pin_mem: True # Pin memory for faster data transfer to GPU
+n_packs: 1 # Number of data packs to use (for parallel processing), only useful in 'nucleotide' mode, obsolete parameters
+padding: 0 # No padding applied to the data, only useful in 'nucleotide' mode
+mask_ratio: 0 # No masking applied to the data
+insulation_subsample_ratio: 1 # Use all insulation data (no subsampling), only useful in 'nucleotide' mode
+hic_path: /home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic # Path to Hi-C data file
