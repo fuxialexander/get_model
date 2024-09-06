@@ -129,6 +129,12 @@ class RegionLitModel(LitModel):
             # check for nan
             if torch.isnan(pred['exp']).any() or torch.isnan(obs['exp']).any():
                 return
+            
+        if 'hic' in obs:
+            idx = np.random.choice(
+                obs['hic'].flatten().shape[0], 1000, replace=False)
+            obs['hic'] = obs['hic'].flatten()[idx]
+            pred['hic'] = pred['hic'].flatten()[idx]
 
         metrics = self.metrics(pred, obs)
         if batch_idx == 0 and self.cfg.log_image:

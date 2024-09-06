@@ -196,6 +196,7 @@ class RegionMotifDatasetConfig:
     leave_out_chromosomes: str | None = None
     leave_out_celltypes: str | None = None
     mask_ratio: float = 0.0
+    hic_path: str | None = None
 
 @dataclass
 class OptimizerConfig:
