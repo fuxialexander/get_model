@@ -36,13 +36,19 @@ python get_model/debug/debug_run_region.py --config-name finetune_tutorial stage
 ## Model Architecture
 
 GET uses a transformer-based architecture with several key components:
+- Region Embedding
 - Motif Scanner
 - ATAC Attention
-- Region Embedding
 - Transformer Encoder
 - Task-specific heads (Expression, Hi-C, etc.)
 
-For more details, see [Model Architecture](tutorials/Model%20Customization.md).
+
+[![Model Architechture](model.png)](model.html)
+
+Click on the image above to view an interactive diagram of the model architecture.
+
+
+For more details on how you can write new models, see [Model Architecture](tutorials/Model%20Customization.md).
 
 ## Training
 
