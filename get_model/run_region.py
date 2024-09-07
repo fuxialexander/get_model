@@ -141,8 +141,9 @@ class RegionLitModel(LitModel):
             # log one example as scatter plot
             for key in pred:
                 plt.clf()
-                self.logger.experiment.log({
-                    f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
+                if self.cfg.run.use_wandb:
+                    self.logger.experiment.log({
+                        f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
                 })
         distributed = self.cfg.machine.num_devices > 1
         self.log_dict(

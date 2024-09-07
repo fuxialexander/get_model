@@ -194,8 +194,9 @@ class LitModel(L.LightningModule):
             # log one example as scatter plot
             for key in pred:
                 plt.clf()
-                self.logger.experiment.log({
-                    f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
+                if self.cfg.run.use_wandb:
+                    self.logger.experiment.log({
+                        f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
                 })
 
     def test_step(self, batch, batch_idx):
@@ -610,7 +611,7 @@ class GETDataModule(L.LightningDataModule):
         )
 
 def run_shared(cfg, model, dm):
-    trainer, _ = setup_trainer(cfg)
+    trainer = setup_trainer(cfg)
     
     if cfg.stage == 'fit':
         trainer.fit(model, dm, ckpt_path=cfg.finetune.resume_ckpt)
@@ -639,7 +640,7 @@ def run_downstream(cfg: DictConfig):
     model.to('cuda')
     dm = GETDataModule(cfg)
     model.dm = dm
-    trainer, _ = setup_trainer(cfg)
+    trainer = setup_trainer(cfg)
     print(run_ppif_task(trainer, model))
 
 

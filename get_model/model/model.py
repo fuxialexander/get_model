@@ -893,7 +893,7 @@ class GETRegionFinetuneHiCOE(BaseGETModel):
 
     def get_input(self, batch, perturb=False):
         peak_coord = batch['peak_coord']
-        peak_length = peak_coord[:, :, 1] - peak_coord[:, :, 0]
+        peak_length = (peak_coord[:, :, 1] - peak_coord[:, :, 0])/1000
         peak_coord_mean = peak_coord[:, :, 0]
         # pair-wise distance using torch
         # Add new dimensions to create column and row vectors
@@ -907,19 +907,20 @@ class GETRegionFinetuneHiCOE(BaseGETModel):
             (peak_coord_mean_col - peak_coord_mean_row).abs() + 1).unsqueeze(1)
         region_model = batch['region_motif'].clone()
         batch['distance_map'] = distance
-        distance_1d = torch.log10((peak_coord_mean - peak_coord_mean.min())/1000 + 1)
+        distance_1d = torch.log10((peak_coord_mean - peak_coord_mean.min())/1000+1)
         batch['distance_1d'] = distance_1d
         # region_model[:, :, -1] = 1 # set atac to binary
         return {
             'region_motif': region_model,
             'distance_map': distance,
             'distance_1d': distance_1d,
-            'peak_length': peak_length/1000
+            'peak_length': peak_length
         }
 
     def forward(self, region_motif, distance_map, distance_1d, peak_length):
         # concat peak_length to the region_motif
         region_motif  = torch.cat([region_motif, peak_length.unsqueeze(-1), distance_1d.unsqueeze(-1)], dim=-1)
+        # normalize the input
         x = self.region_embed(region_motif)
         B, N, C = x.shape
         cls_tokens = self.cls_token.expand(B, -1, -1)

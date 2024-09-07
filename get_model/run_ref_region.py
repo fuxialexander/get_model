@@ -176,20 +176,23 @@ class RegionLitModel(LitModel):
             for key in pred:
                 if key!='hic':
                     plt.clf()
-                    self.logger.experiment.log({
-                        f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
+                    if self.cfg.run.use_wandb:
+                        self.logger.experiment.log({
+                            f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
                     })
                 else:
                     # log hic matrix as a heatmap
                     for i in range(len(pred[key])):
 
                         plt.clf()
-                        self.logger.experiment.log({
-                            f"heatmap_{key}_pred": wandb.Image(sns.heatmap(pred[key][i].detach().cpu().numpy().reshape(200,200), square=True, vmax=1.0, vmin=0, cmap='viridis'))
+                        if self.cfg.run.use_wandb:
+                            self.logger.experiment.log({
+                                f"heatmap_{key}_pred": wandb.Image(sns.heatmap(pred[key][i].detach().cpu().numpy().reshape(200,200), square=True, vmax=1.0, vmin=0, cmap='viridis'))
                         })
                         plt.clf()
-                        self.logger.experiment.log({
-                            f"heatmap_{key}_obs": wandb.Image(sns.heatmap(obs[key][i].detach().cpu().numpy().reshape(200,200), square=True, vmax=1.0, vmin=0, cmap='viridis'))
+                        if self.cfg.run.use_wandb:
+                            self.logger.experiment.log({
+                                f"heatmap_{key}_obs": wandb.Image(sns.heatmap(obs[key][i].detach().cpu().numpy().reshape(200,200), square=True, vmax=1.0, vmin=0, cmap='viridis'))
                         })
         # if distributed, set sync_dist=True
         distributed = self.cfg.machine.num_devices > 1

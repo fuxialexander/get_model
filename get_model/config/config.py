@@ -255,6 +255,7 @@ class RunConfig:
     """
     project_name: str = MISSING
     run_name: str = MISSING
+    use_wandb: bool = True
 
 
 @dataclass

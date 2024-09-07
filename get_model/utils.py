@@ -49,9 +49,11 @@ def setup_trainer(cfg):
     
     # create output dir if not exist
     os.makedirs(os.path.join(cfg.machine.output_dir, cfg.run.project_name, cfg.run.run_name), exist_ok=True)
-
-    wandb_logger = setup_wandb(cfg)
-
+    logger = []
+    if cfg.run.use_wandb:
+        wandb_logger = setup_wandb(cfg)
+        logger.append(wandb_logger)
+    logger.append(CSVLogger(save_dir=os.path.join(cfg.machine.output_dir, cfg.run.project_name, cfg.run.run_name, "csv_logs")))
     # Create both regular and finetuned checkpoints
     regular_checkpoint = ModelCheckpoint(
         monitor="val_loss", 
@@ -79,10 +81,7 @@ def setup_trainer(cfg):
         num_sanity_val_steps=10,
         strategy=strategy,
         devices=device,
-        logger=[
-            wandb_logger,
-            CSVLogger(save_dir=os.path.join(cfg.machine.output_dir, cfg.run.project_name, cfg.run.run_name, "csv_logs"))
-        ],
+        logger=logger,
         callbacks=callbacks,
         plugins=[MixedPrecision(precision='16-mixed', device="cuda")],
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
@@ -93,7 +92,7 @@ def setup_trainer(cfg):
         default_root_dir=os.path.join(cfg.machine.output_dir, cfg.run.project_name, cfg.run.run_name),
     )
 
-    return trainer, wandb_logger
+    return trainer
 
 def load_config(config_name):
     # Initialize Hydra to load the configuration

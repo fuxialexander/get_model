@@ -19,7 +19,7 @@ dataset:
     mask_ratio: 0.0
     hic_path: /home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic
     hic_resolution: 5000
-    hic_method: "oe" # or observed
+    hic_method: "observed" # or observed
     hic_normalization: "KR"
 
 training:
@@ -32,7 +32,7 @@ training:
   add_lr_monitor: true
 
 optimizer:
-  lr: 0.0001
+  lr: 0.00001
   min_lr: 0.00001
   weight_decay: 0.05
   opt: "adamw"
@@ -51,11 +51,13 @@ task:
 
 finetune:
   # resume_ckpt: /home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
-  pretrain_checkpoint: false
-  strict: true
-  use_lora: false
-  checkpoint: null
+  pretrain_checkpoint: true
+  use_lora: true
+  checkpoint: /home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
   patterns_to_freeze: []
+  rename_config:
+    "model.": ""
+    "hic_header": "head_hic"
 
 eval_tss: false
 log_image: true
