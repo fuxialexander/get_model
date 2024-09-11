@@ -131,11 +131,15 @@ class RegionLitModel(LitModel):
                 return
             
         if 'hic' in obs:
-            idx = np.random.choice(
-                obs['hic'].flatten().shape[0], 1000, replace=False)
-            obs['hic'] = obs['hic'].flatten()[idx]
-            pred['hic'] = pred['hic'].flatten()[idx]
-
+            try:
+                idx = np.random.choice(
+                    obs['hic'].flatten().shape[0], 1000, replace=False)
+                obs['hic'] = obs['hic'].flatten()[idx]
+                pred['hic'] = pred['hic'].flatten()[idx]
+            except Exception as e:
+                print(obs['hic'].shape)
+                print(pred['hic'].shape)
+                
         metrics = self.metrics(pred, obs)
         if batch_idx == 0 and self.cfg.log_image:
             # log one example as scatter plot

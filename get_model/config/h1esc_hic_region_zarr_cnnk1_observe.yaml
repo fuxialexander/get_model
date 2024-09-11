@@ -1,6 +1,6 @@
 defaults:
   - base_region_zarr_config
-  - model/GETRegionFinetuneHiCOENoCNN@_here_
+  - model/GETRegionFinetuneHiC@_here_
   - finetune/lightning@finetune
   - machine/pc_hic
   - _self_
@@ -19,7 +19,7 @@ dataset:
     mask_ratio: 0.0
     hic_path: /home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic
     hic_resolution: 5000
-    hic_method: "oe" # or observed
+    hic_method: "observed" # or observed
     hic_normalization: "KR"
 
 training:
@@ -32,7 +32,7 @@ training:
   add_lr_monitor: true
 
 optimizer:
-  lr: 0.00001
+  lr: 0.00005
   min_lr: 0.00001
   weight_decay: 0.05
   opt: "adamw"
@@ -41,7 +41,7 @@ optimizer:
 
 run:
   project_name: "h1esc_hic_region_zarr"
-  run_name: "nocnn_oe_no_distant_loss_mask"
+  run_name: "cnnk3_observe_lr0.00005"
 
 task:
   layer_names: ['region_embed']
