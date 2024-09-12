@@ -1183,7 +1183,16 @@ class GETRegionFinetuneHiCOENoCNN(BaseGETModel):
             'distance_map': torch.randn(B, R, R).float(),
         }
 
-
+@dataclass 
+class GETRegionFinetuneTFExpConfig(BaseGETModelConfig):
+    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    head_exp: ExpressionHeadConfig = field(
+        default_factory=ExpressionHeadConfig)
+    head_hic: ContactMapHeadConfig = field(
+        default_factory=ContactMapHeadConfig)
+    distance_contact_map: DistanceContactHeadConfig = field(
+        default_factory=DistanceContactHeadConfig)
 
 @dataclass
 class GETRegionFinetuneExpHiCAxialModelConfig(BaseGETModelConfig):
