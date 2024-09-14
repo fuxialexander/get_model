@@ -1447,7 +1447,7 @@ class GETChrombpNet(GETChrombpNetBias):
         return {'atpm': atpm, 'aprofile': aprofile}
 
 @dataclass
-class GETNucleotideV1MotifAdaptor(BaseGETModelConfig):
+class GETNucleotideV1MotifAdaptorModelConfig(BaseGETModelConfig):
     motif_scanner: MotifScannerConfig = field(
         default_factory=MotifScannerConfig)
     atac_attention: SplitPoolConfig = field(
@@ -1456,7 +1456,7 @@ class GETNucleotideV1MotifAdaptor(BaseGETModelConfig):
 
 
 class GETNucleotideV1MotifAdaptor(BaseGETModel):
-    def __init__(self, cfg: GETNucleotideV1MotifAdaptor):
+    def __init__(self, cfg: GETNucleotideV1MotifAdaptorModelConfig):
         super().__init__(cfg)
         self.motif_scanner = MotifScanner(cfg.motif_scanner)
         conv_channel = cfg.motif_scanner.num_motif+2
@@ -1501,6 +1501,42 @@ class GETNucleotideV1MotifAdaptor(BaseGETModel):
         B, R, L = 2, 1, 2000
         return {
             'sample_peak_sequence': torch.randint(0, 4, (B, R * L, 4)).float(),
+        }
+
+
+@dataclass
+class GETNucleotideMotifAdaptorV3ModelConfig(BaseGETModelConfig):
+    motif_scanner: MotifScannerConfig = field(
+        default_factory=MotifScannerConfig) 
+    
+class GETNucleotideMotifAdaptorV3(BaseGETModel):
+    def __init__(self, cfg: GETNucleotideMotifAdaptorV3ModelConfig):
+        super().__init__(cfg)
+        self.motif_scanner = MotifScanner(cfg.motif_scanner)
+        conv_channel = cfg.motif_scanner.num_motif
+        self.proj = nn.Linear(conv_channel, 282)
+        self.apply(self._init_weights)
+
+    def get_input(self, batch):
+        return {'sequence': batch['sequence'].half()}
+
+    def forward(self, sequence):
+        x = self.motif_scanner(sequence)
+        x = self.proj(x)  # B, 282
+        x = F.relu(x)
+        return x
+
+    def before_loss(self, output, batch):
+
+        pred = {'motif': output}
+        obs = {'motif': batch['motif']}
+        print(pred['motif'].sum(), obs['motif'].sum())
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, L = 2, 512
+        return {
+            'sequence': torch.randint(0, 4, (B, L, 4)).float(),
         }
 
 

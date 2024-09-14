@@ -74,7 +74,9 @@ def setup_trainer(cfg):
     inference_mode = True
     if 'interpret' in cfg.task.test_mode:
         inference_mode = False
-
+    plugins = []
+    if cfg.training.use_fp16:
+        plugins.append(MixedPrecision(precision='16-mixed', device="cuda"))
     trainer = L.Trainer(
         max_epochs=cfg.training.epochs,
         accelerator=accelerator,
@@ -83,11 +85,11 @@ def setup_trainer(cfg):
         devices=device,
         logger=logger,
         callbacks=callbacks,
-        plugins=[MixedPrecision(precision='16-mixed', device="cuda")],
+        plugins=plugins,
         accumulate_grad_batches=cfg.training.accumulate_grad_batches,
         gradient_clip_val=cfg.training.clip_grad,
-        log_every_n_steps=25,
-        val_check_interval=0.5,
+        log_every_n_steps=cfg.training.log_every_n_steps,
+        val_check_interval=cfg.training.val_check_interval,
         inference_mode=inference_mode,
         default_root_dir=os.path.join(cfg.machine.output_dir, cfg.run.project_name, cfg.run.run_name),
     )
@@ -314,34 +316,21 @@ def recursive_save_to_zarr(zarr_group, dict_data, **kwargs):
                     zarr_group[k].append(new_data)
                 else:
                     zarr_group[k].append(v)
-                
-def cosine_scheduler(
-    base_value,
-    final_value,
-    epochs,
-    niter_per_ep,
-    warmup_epochs=0,
-    start_warmup_value=0,
-    warmup_steps=-1,
-):
+
+def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epochs=0,
+                     start_warmup_value=0, warmup_steps=-1):
     warmup_schedule = np.array([])
     warmup_iters = warmup_epochs * niter_per_ep
     if warmup_steps > 0:
         warmup_iters = warmup_steps
     print("Set warmup steps = %d" % warmup_iters)
     if warmup_epochs > 0:
-        warmup_schedule = np.linspace(
-            start_warmup_value, base_value, warmup_iters)
+        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+
     iters = np.arange(epochs * niter_per_ep - warmup_iters)
     schedule = np.array(
-        [
-            final_value
-            + 0.5
-            * (base_value - final_value)
-            * (1 + math.pi * i / (len(iters)))
-            for i in iters
-        ]
-    )
+        [final_value + 0.5 * (base_value - final_value) * (1 + math.cos(math.pi * i / (len(iters)))) for i in iters])
+
     schedule = np.concatenate((warmup_schedule, schedule))
 
     assert len(schedule) == epochs * niter_per_ep

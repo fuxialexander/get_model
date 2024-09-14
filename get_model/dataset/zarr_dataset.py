@@ -4233,3 +4233,83 @@ class InferenceEverythingDataset(InferenceReferenceRegionDataset):
         rrd_item = super().__getitem__(index)
         zarr_item = self.zarr_dataset[index]
         return {"rrd": rrd_item, "zarr": zarr_item}
+
+@dataclass
+class SequenceMotifConfig:
+    sequence_zarr: str
+    motif_zarr: str
+    transform: Optional[Callable] = None
+    is_train: bool = True
+    sequence_length: int = 512
+    leave_out_chromosomes: str | None = None
+
+
+class SequenceMotifDataset(Dataset):
+    def __init__(self, sequence_zarr: str, motif_zarr: str, transform=None, is_train=True, sequence_length=512, leave_out_chromosomes: str | None = None, chunk_size=100000):
+        self.sequence_dataset = DenseZarrIO(sequence_zarr, dtype="int8", mode="r")
+        self.motif_dataset = DenseZarrIO(motif_zarr, mode='r')
+        self.transform = transform
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.common_chroms = np.intersect1d(self.sequence_dataset.chrom_names, self.motif_dataset.chrom_names)
+        self.is_train = is_train
+        self.sequence_length = sequence_length
+        self.chunk_size = chunk_size
+        self.current_chunk = None
+        self.current_chrom = None
+        self.current_chunk_start = None
+        self.sequence_dataset.load_to_memory_dense()
+
+        self.setup()
+    
+    def __len__(self):
+        if self.is_train:
+            return 12800
+        else:
+            return 1280
+    
+    def setup(self):
+        input_chromosomes = _chromosome_splitter(
+            self.common_chroms, self.leave_out_chromosomes, self.is_train
+        )
+        max_indices = {}
+        for chrom in input_chromosomes:
+            max_indices[chrom] = (self.sequence_dataset.chrom_sizes[chrom] - self.sequence_length)//self.sequence_length
+        
+        sample_size = 0
+        for chrom in input_chromosomes:
+            sample_size += max_indices[chrom]
+        self.max_indices = max_indices
+        self.sample_size = sample_size
+
+    def load_chunk(self, chrom, chunk_start):
+        self.current_chrom = chrom
+        self.current_chunk_start = chunk_start
+        chunk_end = min(chunk_start + self.chunk_size, self.sequence_dataset.chrom_sizes[chrom])
+        self.current_chunk = {
+            "sequence": self.sequence_dataset.get_track(chrom, chunk_start, chunk_end),
+            "motif": self.motif_dataset.get_track(chrom, chunk_start, chunk_end)
+        }
+
+    def __getitem__(self, index):
+        for chrom in self.max_indices:
+            if index < self.max_indices[chrom]:
+                break
+            index -= self.max_indices[chrom]
+        
+        i = index
+        start_pos = i * self.sequence_length
+        chunk_start = (start_pos // self.chunk_size) * self.chunk_size
+
+        if self.current_chrom != chrom or self.current_chunk_start != chunk_start:
+            self.load_chunk(chrom, chunk_start)
+
+        chunk_offset = start_pos - self.current_chunk_start
+        sequence = self.current_chunk["sequence"][chunk_offset:chunk_offset + self.sequence_length]
+        motif = self.current_chunk["motif"][chunk_offset:chunk_offset + self.sequence_length]
+
+        if self.transform:
+            return self.transform({"sequence": sequence, "motif": motif})
+        return {"sequence": sequence, "motif": motif}
+    
+    def __repr__(self):
+        return f"SequenceMotifDataset(sequence_zarr={self.sequence_dataset.zarr_path}, motif_zarr={self.motif_dataset.zarr_path}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes}, chunk_size={self.chunk_size})"

@@ -28,7 +28,8 @@ len(motif_clusters)
 
 # %%
 z= zarr.open_group("/home/xf2217/Projects/get_data/hg38_motif.zarr", mode='a')
-
+z.create_group('chrs')
+z = z['chrs']
 
 # %%
 from caesar.io.genome import ChromSize
@@ -77,7 +78,7 @@ def process_chromosome(chrom):
     gc.collect()
 #%%
 import os
-for chrom in tqdm(chrom_size.chrom_sizes.keys(), desc="Chromosomes"):
+for chrom in tqdm(sorted(chrom_size.chrom_sizes.keys())[::-1], desc="Chromosomes"):
     try:
         process_chromosome(chrom)
     except Exception as e:

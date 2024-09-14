@@ -202,6 +202,18 @@ class RegionMotifDatasetConfig:
     hic_normalization: str = "KR"
 
 @dataclass
+class NucleotideMotifDatasetConfig:
+    """
+    Configuration for the nucleotide motif dataset.
+    """
+    sequence_zarr: str = MISSING
+    motif_zarr: str = MISSING
+    transform: Optional[Any] = None
+    sequence_length: int = 512
+    leave_out_chromosomes: str | None = None
+
+
+@dataclass
 class OptimizerConfig:
     """
     Configuration for the optimizer.
@@ -234,6 +246,8 @@ class TrainingConfig:
         accumulate_grad_batches: Number of batches to accumulate gradients.
         clip_grad: Gradient clipping value.
         use_fp16: Whether to use FP16.
+        log_every_n_steps: Number of steps to log.
+        val_check_interval: Validation check interval.
     """
     save_ckpt_freq: int = 10
     epochs: int = 100
@@ -241,6 +255,8 @@ class TrainingConfig:
     accumulate_grad_batches: int = 1
     clip_grad: float | None = None
     use_fp16: bool = True
+    log_every_n_steps: int = 25
+    val_check_interval: float = 0.5
     add_lr_monitor: bool = False
 
 
@@ -464,6 +480,23 @@ class RegionZarrConfig:
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     task: TaskConfig = field(default_factory=TaskConfig)
 
+@dataclass
+class NucleotideMotifAdaptorConfig:
+    """
+    Configuration for nucleotide motif.
+    """
+    run: RunConfig = field(default_factory=RunConfig)
+    stage: str = "fit"
+    assembly: str = "hg38"
+    eval_tss: bool = False
+    log_image: bool = False
+    model: Any = MISSING
+    machine: MachineConfig = field(default_factory=MachineConfig)
+    dataset: NucleotideMotifDatasetConfig = field(default_factory=NucleotideMotifDatasetConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
+    task: TaskConfig = field(default_factory=TaskConfig)
 
 
 cs = ConfigStore.instance()
@@ -480,3 +513,6 @@ csr.store(name="base_region_config", node=RegionConfig)
 
 csz = ConfigStore.instance()
 csz.store(name="base_region_zarr_config", node=RegionZarrConfig)
+
+csn = ConfigStore.instance()
+csn.store(name="base_nucleotide_motif_adaptor_config", node=NucleotideMotifAdaptorConfig)
