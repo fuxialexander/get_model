@@ -3306,8 +3306,8 @@ Sampling step: {self.sampling_step}
         )
         peak_list = []
         cell_list = []
-        target_list = [] if not is_pretrain else None
-        tssidx_list = [] if not is_pretrain else None
+        target_list = []
+        tssidx_list = []
 
         for file_id in file_id_list:
             cell_label = cell_dict[file_id]
@@ -3593,8 +3593,8 @@ class InferenceRegionDataset(RegionDataset):
         cell_list = []
         chromosome_list = []
         peak_coord_list = []
-        target_list = [] if not is_pretrain else None
-        tssidx_list = [] if not is_pretrain else None
+        target_list = []
+        tssidx_list = []
         gene_list = []
         strand_list = []
         tss_peak_list = []
