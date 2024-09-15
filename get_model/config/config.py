@@ -177,6 +177,7 @@ class RegionDatasetConfig:
     transform: Optional[Any] = None
     data_type: str = "fetal"
     keep_celltypes: str | None = ""
+    is_pretrain: bool = False
     leave_out_celltypes: str | None = "Astrocytes"
     leave_out_chromosomes: str | None = "chr4,chr14"
     quantitative_atac: bool = False
