@@ -176,6 +176,7 @@ class RegionDatasetConfig:
     num_region_per_sample: int = 900
     transform: Optional[Any] = None
     data_type: str = "fetal"
+    keep_celltypes: str | None = ""
     leave_out_celltypes: str | None = "Astrocytes"
     leave_out_chromosomes: str | None = "chr4,chr14"
     quantitative_atac: bool = False

@@ -3022,7 +3022,7 @@ class RegionDataset(Dataset):
     """
         PyTorch dataset class for cell type expression data.
         This is for backward compatibility with old (version 1) datasets.
-    Consider use InferenceRegionMotifDataset for new datasets.
+        Consider use RegionMotifDataset for new datasets.
 
         Args:
             root (str): Root directory path.
@@ -3047,6 +3047,8 @@ class RegionDataset(Dataset):
         transform: Optional[Callable] = None,
         data_type: str = "fetal",
         is_train: bool = True,
+        is_pretrain: bool = False,
+        keep_celltypes: str = "",
         leave_out_celltypes: str = "",
         leave_out_chromosomes: str = "",
         quantitative_atac: bool = False,
@@ -3058,6 +3060,8 @@ class RegionDataset(Dataset):
         self.root = root
         self.transform = transform
         self.is_train = is_train
+        self.is_pretrain = is_pretrain
+        self.keep_celltypes = keep_celltypes
         self.leave_out_celltypes = leave_out_celltypes
         self.leave_out_chromosomes = leave_out_chromosomes
         self.quantitative_atac = quantitative_atac
@@ -3066,11 +3070,12 @@ class RegionDataset(Dataset):
         self.mask_ratio = mask_ratio
         metadata_path = os.path.join(self.root, metadata_path)
         peaks, targets, tssidx = self._make_dataset(
-            False,
+            self.is_pretrain,
             data_type,
             self.root,
             metadata_path,
             num_region_per_sample,
+            keep_celltypes,
             leave_out_celltypes,
             leave_out_chromosomes,
             quantitative_atac,
@@ -3144,6 +3149,7 @@ Sampling step: {self.sampling_step}
     @staticmethod
     def _cell_splitter(
         celltype_metadata: pd.DataFrame,
+        keep_celltypes: str,
         leave_out_celltypes: str,
         datatypes: str,
         is_train: bool = True,
@@ -3163,27 +3169,24 @@ Sampling step: {self.sampling_step}
             Tuple[List[str], Dict[str, str], Dict[str, str]]: Tuple containing the list of target file IDs,
             cell labels dictionary, and datatype dictionary.
         """
+        celltype_list = sorted(celltype_metadata["celltype"].unique().tolist())
+        
+        if keep_celltypes != "" and keep_celltypes is not None:
+            keep_celltypes = keep_celltypes.split(",")
+            celltype_list = [
+                cell for cell in celltype_list if cell in keep_celltypes
+            ]
+            print(f"Keep cell types list: {celltype_list}")
+
         leave_out_celltypes = leave_out_celltypes.split(",")
         datatypes = datatypes.split(",")
 
-        celltype_list = sorted(celltype_metadata["celltype"].unique().tolist())
+        
         if is_train:
-            # TODO: revert this
-            # celltype_list = [
-            #     cell for cell in celltype_list if cell not in leave_out_celltypes]
-            # print(f"Train cell types list: {celltype_list}")
-            # print(f"Train data types list: {datatypes}")
-
-            celltype_list = (
-                leave_out_celltypes if leave_out_celltypes != [""] else celltype_list
-            )
-            print(
-                f"Using validation cell type for training!!! cell types list: {celltype_list}"
-            )
-            print(
-                f"Using validation cell type for training!!! data types list: {datatypes}"
-            )
-
+            celltype_list = [
+                cell for cell in celltype_list if cell not in leave_out_celltypes]
+            print(f"Train cell types list: {celltype_list}")
+            print(f"Train data types list: {datatypes}")
         else:
             celltype_list = (
                 leave_out_celltypes if leave_out_celltypes != [""] else celltype_list
@@ -3266,6 +3269,7 @@ Sampling step: {self.sampling_step}
         data_path: str,
         celltype_metadata_path: str,
         num_region_per_sample: int,
+        keep_celltypes: str,
         leave_out_celltypes: str,
         leave_out_chromosomes: str,
         quantitative_atac: bool,
@@ -3294,6 +3298,7 @@ Sampling step: {self.sampling_step}
         celltype_metadata = pd.read_csv(celltype_metadata_path, sep=",", dtype=str)
         file_id_list, cell_dict, datatype_dict = self._cell_splitter(
             celltype_metadata,
+            keep_celltypes,
             leave_out_celltypes,
             datatypes,
             is_train=is_train,
@@ -3479,6 +3484,7 @@ class InferenceRegionDataset(RegionDataset):
         transform: Optional[Callable] = None,
         data_type: str = "fetal",
         is_train: bool = True,
+        keep_celltypes: str = "",
         leave_out_celltypes: str = "",
         leave_out_chromosomes: str = "",
         quantitative_atac: bool = False,
@@ -3519,6 +3525,7 @@ class InferenceRegionDataset(RegionDataset):
             self.root,
             metadata_path,
             num_region_per_sample,
+            keep_celltypes,
             leave_out_celltypes,
             leave_out_chromosomes,
             quantitative_atac,
@@ -3545,6 +3552,7 @@ class InferenceRegionDataset(RegionDataset):
         data_path: str,
         celltype_metadata_path: str,
         num_region_per_sample: int,
+        keep_celltypes: str,
         leave_out_celltypes: str,
         leave_out_chromosomes: str,
         quantitative_atac: bool,
@@ -3573,6 +3581,7 @@ class InferenceRegionDataset(RegionDataset):
         celltype_metadata = pd.read_csv(celltype_metadata_path, sep=",", dtype=str)
         file_id_list, cell_dict, datatype_dict = self._cell_splitter(
             celltype_metadata,
+            keep_celltypes,
             leave_out_celltypes,
             datatypes,
             is_train=is_train,
