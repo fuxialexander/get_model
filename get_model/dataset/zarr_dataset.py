@@ -3376,16 +3376,18 @@ Sampling step: {self.sampling_step}
 
                     peak_data_i = coo_matrix(peak_data_i)
 
-                    if not is_pretrain:
+                    if is_pretrain:
+                        target_i = coo_matrix(np.zeros((num_region_per_sample, 2)))
+                        tssidx_i = coo_matrix(np.zeros((num_region_per_sample, 1)))
+                    else:
                         target_i = coo_matrix(target_data[start_index:end_index])
                         tssidx_i = tssidx_data[start_index:end_index]
 
                     if peak_data_i.shape[0] == num_region_per_sample:
                         peak_list.append(peak_data_i)
                         cell_list.append(cell_label)
-                        if not is_pretrain:
-                            target_list.append(target_i)
-                            tssidx_list.append(tssidx_i)
+                        target_list.append(target_i)
+                        tssidx_list.append(tssidx_i)
 
         return peak_list, target_list, tssidx_list
 
