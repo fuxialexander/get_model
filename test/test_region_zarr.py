@@ -346,7 +346,7 @@ from get_model.config.config import load_config, pretty_print_config
 
 from get_model.run_region import run_zarr as run
 
-cfg = load_config('h1esc_hic_region_zarr')
+cfg = load_config('h1esc_hic_region_zarr_cnnk1_observe')
 pretty_print_config(cfg)
 #%%
 cfg.stage = 'validate'
@@ -354,10 +354,10 @@ cfg.machine.batch_size=1
 cfg.dataset.leave_out_chromosomes = 'chr11'
 cfg.dataset.hic_method='observed'
 # cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt'
-cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/debug_observed_larger_lr_adamw/checkpoints/last-v3.ckpt'
+cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/cnnk3_observe_lr0.00015_cosine/checkpoints/last.ckpt'
 # cfg.finetune.resume_ckpt = None
 cfg.finetune.strict=True
-cfg.finetune.use_lora=True
+cfg.finetune.use_lora=False
 cfg.run.use_wandb = False
 cfg.finetune.rename_config = {'model.': '', 'hic_header': 'head_hic'}
 trainer = run(cfg)
@@ -397,13 +397,22 @@ for param in trainer.model.parameters():
 
 
 # %%
-
+import torch
 for i,batch in enumerate(trainer.val_dataloaders):
-    if i == 35:
+    if i == 37:
         print(batch['hic_matrix'].shape)
         print(batch['region_motif'].shape)
+        # batch['region_motif'][:, 220:250, 282] = batch['region_motif'][:, 220:250, 282] * 0.01
+        # batch['region_motif'][:, 220:250, 17:282] = batch['region_motif'][:, 220:250, 17:282] * 0.01
         trainer.model.model.to('cpu')
-        pred = trainer.model(trainer.model.model.get_input(batch))
+        input = trainer.model.model.get_input(batch)
+        # input['distance_1d'][:,1:] = input['distance_1d'][:, 1:]
+        # input['distance_1d'][:, 0:200] = input['distance_1d'][:, 0:200]
+        # reverse input['distance_1d'][:, 200:]
+        # input['distance_1d'][:, 200] = input['distance_1d'][:, 200] 
+        # input['peak_length'][:, 200:300] = torch.flip(input['peak_length'][:, 200:300], dims=[1])
+        # input['distance_1d'][:, 200:] = input['distance_1d'][:, 200:]+1
+        pred = trainer.model(input)
         print(pred.shape)
         a = batch['hic_matrix'][0].cpu().numpy()
         b = pred[0].detach().squeeze().cpu().numpy()
@@ -429,7 +438,7 @@ mask = mask_boundary#|mask_eye|mask
 a[mask] = 0
 b[mask] = 0
 sns.heatmap(a, ax=axs[0], vmin=0, vmax=2, cmap='viridis', cbar=False)
-sns.heatmap(b, ax=axs[1], vmin=0,  cmap='viridis', cbar=False)
+sns.heatmap(b, ax=axs[1], vmin=0, vmax=2, cmap='viridis', cbar=False)
 sns.heatmap(c, ax=axs[2], vmin=3, vmax=6, cmap='viridis_r', cbar=False)
 axs[0].set_title('Hi-C Matrix')
 axs[1].set_title('Predicted HIC Matrix')
@@ -477,11 +486,40 @@ for ax in axs[3:]:
     ax.set_yticklabels([])
     ax.set_yticks([])
 plt.show()
+
+
+
+
+
+
+
+
+
+
+
 #%%
+def get_jacobian(model, batch):
+    input = trainer.model.model.get_input(batch)
+    recursive_cuda(input)
+    from torch.autograd import grad
+    input['region_motif'].requires_grad = True
+    output = model(**input)[0]
+    mask = batch['hic_matrix']==0
+    mask_boundary = np.zeros_like(mask, dtype=bool)
+    mask_boundary[0:10, :] = True
+    mask_boundary[:, 0:10] = True
+    mask_boundary[-10:, :] = True
+    mask_boundary[:, -10:] = True   
+    mask = mask | mask_boundary
+    mask = mask.squeeze()
+    (output[~mask].detach()+1-output[~mask]).sum().backward(retain_graph=True)
+    jacobian = input['region_motif'].grad
+    return jacobian
 
 preds = []
 obs = []
 distance = []
+jacobians = []
 from typing import Dict
 def recursive_cuda(dict):
     for key in dict:
@@ -494,6 +532,9 @@ for i,batch in tqdm(enumerate(trainer.val_dataloaders)):
     trainer.model.model.to('cuda')
     input = trainer.model.model.get_input(batch)
     recursive_cuda(input)
+    jacobian = get_jacobian(trainer.model.model, batch)
+    jacobian = jacobian[0].detach().cpu().numpy()
+    jacobians.append(jacobian)
     pred = trainer.model(input)
     a = batch['hic_matrix'][0].cpu().numpy()
     b = pred[0].detach().squeeze().cpu().numpy()
@@ -507,20 +548,32 @@ for i,batch in tqdm(enumerate(trainer.val_dataloaders)):
 distance = np.concatenate(distance)
 obs = np.concatenate(obs)
 preds = np.concatenate(preds)
+jacobians = np.concatenate(jacobians)
+jacobians = jacobians.reshape(-1, 400, 283)
 #%%
-bins = np.linspace(500000, 600000, 50)
+bins = np.linspace(1000, 3000000, 30)
 # compute correlation for each bin
 correlations = []
 from tqdm import tqdm
 for i, bin in tqdm(enumerate(bins)):
     if i<len(bins)-1:
         mask = (distance > bin) & (distance < bins[i+1])
-        mask = mask & (obs>0)
+        mask_boundary = np.zeros_like(mask, dtype=bool)
+        mask_boundary[0:10, :] = True
+        mask_boundary[:, 0:10] = True
+        mask_boundary[-10:, :] = True
+        mask_boundary[:, -10:] = True   
+        mask = mask & (obs>0) & ~mask_boundary
         print(mask.sum())
         correlations.append(np.corrcoef(obs[mask].flatten(), preds[mask].flatten())[0, 1])
 correlations = np.array(correlations)
 # plot the correlation as a function of the distance
+#%%
+fig, ax = plt.subplots(figsize=(4, 2.5))
 plt.plot(bins[1:], correlations)
+plt.xlabel('Distance')
+plt.ylabel('Pearson Correlation')
+plt.xticks([0, 1000000, 2000000, 3000000], ['0', '1M', '2M', '3M'])
 plt.show()
 # %%
 # scatter plot of the predicted hic matrix and the observed hic matrix
@@ -533,7 +586,7 @@ pearsonr(obs[mask].flatten(), preds[mask].flatten())
 # plot heatmap of the prediction at top, and atpm, ctcf, length_adjusted ctcf, and overall gradient as line plot at bottom
 fig, axs = plt.subplots(5, 1, figsize=(4, 6), gridspec_kw={'height_ratios': [12, 1, 1, 1, 1]})
 axs = axs.flatten()
-sns.heatmap(b, ax=axs[0], vmin=0, vmax=3, cmap='viridis', cbar=False)
+sns.heatmap(b, ax=axs[0], vmin=0, vmax=2, cmap='viridis', cbar=False)
 axs[0].set_title('Predicted Hi-C Matrix')
 axs[0].set_xticks([])
 axs[0].set_yticks([])
@@ -606,10 +659,6 @@ def plot_hic_and_features(b, batch, jacobian, additional_gradients=None):
     plt.show()
 
 #%%
-
-plot_hic_and_features(b, batch, jacobian, {'GRHL Gradient': int(np.where(motif_clusters=="GRHL")[0]),
-                                                'YY Gradient': int(np.where(motif_clusters=="YY1")[0])})
-# %%
 import pandas as pd
 motif_clusters = np.loadtxt('/home/xf2217/Projects/geneformer_esc/data/motif_cluster.txt', dtype=str)
 # most important features (to the right)
@@ -620,98 +669,70 @@ jacobian_df = pd.DataFrame(jacobian_norm, columns=motif_clusters).abs()
 jacobian_df['overall'] = jacobian_df.mean(1)
 jacobian_df['overall_but_ctcf_atac'] = jacobian_df.drop(columns=['CTCF', 'Accessibility']).mean(1)
 jacobian_df = jacobian_df / jacobian_df.max(0)
+plot_hic_and_features(b, batch, jacobian, {'POU Gradient': int(np.where(motif_clusters=="POU/1")[0]),
+                                                'YY1 Gradient': int(np.where(motif_clusters=="YY1")[0])})
+# %%
+
 #%%
 sns.scatterplot(data=jacobian_df, x='CTCF', y='overall')
 
 jacobian_df.query('overall>CTCF*2 & overall>0.6').mean(0).sort_values().tail(10)
 # %%
-
-#%%
-# a function to convert a 2d contact map to a 3d point cloud
 import numpy as np
-from scipy.optimize import minimize
-import numpy as np
-from scipy.optimize import minimize
-
-def normalize_contact_map(contact_map, max_distance=20.0, min_distance=3.8):
-    """
-    Normalize the contact frequency map to a distance map.
-    
-    Args:
-    contact_map (np.array): 2D array of contact frequencies
-    max_distance (float): Maximum distance for non-contacting residues
-    min_distance (float): Minimum distance for contacting residues
-    
-    Returns:
-    np.array: Normalized distance map
-    """
-    # Avoid division by zero
-    max_freq = np.max(contact_map)
-    normalized_map = 1 - (contact_map / max_freq)
-    
-    # Scale to distance range
-    distance_map = normalized_map * (max_distance - min_distance) + min_distance
-    
-    return distance_map
-
-def contact_map_to_point_cloud(contact_map, max_distance=20.0, min_distance=3.8, num_steps=1000):
-    num_residues = contact_map.shape[0]
-    
-    # Normalize contact map to distance map
-    distance_map = normalize_contact_map(contact_map, max_distance, min_distance)
-    
-    # Initialize random 3D coordinates
-    initial_coords = np.random.rand(num_residues, 3) * max_distance
-    
-    def loss_function(coords):
-        coords = coords.reshape(num_residues, 3)
-        current_distances = np.linalg.norm(coords[:, np.newaxis] - coords, axis=2)
-        
-        # Calculate loss based on the difference between current distances and target distances
-        loss = np.sum((current_distances - distance_map) ** 2)
-        
-        return loss
-    
-    # Optimize the coordinates add progress bar
-    from tqdm import tqdm
-    result = minimize(loss_function, initial_coords.flatten(), method='L-BFGS-B', options={'maxiter': num_steps}, callback=lambda x: tqdm(x, desc='Optimizing coordinates'))
-    
-    # Reshape the result back to (num_residues, 3)
-    final_coords = result.x.reshape(num_residues, 3)
-    
-    return final_coords
-
-# Function to apply random rotation (for rotation equivariance)
-def random_rotation(coords):
-    rotation_matrix = np.random.rand(3, 3)
-    rotation_matrix, _ = np.linalg.qr(rotation_matrix)
-    return np.dot(coords, rotation_matrix)
-
-# Example usage
-contact_freq_map = a[10:-10, 10:-10]
-point_cloud = contact_map_to_point_cloud(contact_freq_map, min_distance=1, max_distance=20, num_steps=5000)
-
-# Apply random rotation for rotation equivariance
-rotated_point_cloud = random_rotation(point_cloud)
+import pandas as pd
+# norm of each column
+jacobian_norm = jacobians.reshape(-1, 283).mean(0)
 # %%
-rotated_point_cloud.shape
+jacobian_norm_df = pd.Series(jacobian_norm, index=motif_clusters)
 # %%
-# plot the point cloud
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-# use plotly to plot the point cloud
-import plotly.graph_objects as go
-
-fig = go.Figure()
-# color by atpm, transparency by atpm
-fig.add_trace(go.Scatter3d(x=rotated_point_cloud[:, 0], y=rotated_point_cloud[:, 1], z=rotated_point_cloud[:, 2], mode='markers', marker=dict(size=3, color=atpm[10:-10], colorscale='Viridis', opacity=0.5)))
-# remove axis pane
-fig.update_layout(scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False)))
-#%%
-# compute the distance matrix of the point cloud
-distance_matrix = np.linalg.norm(rotated_point_cloud[:, np.newaxis] - rotated_point_cloud, axis=2)
-# plot the distance matrix as a heatmap
-plt.imshow(a[10:-10, 10:-10], cmap='viridis')
-plt.colorbar()
+jacobian_norm_df.sort_values().head(10)
+# %%
+# scatterplot of range(0, 283) and jacobian_norm
+fig, ax = plt.subplots(figsize=(4, 2))
+plt.scatter(range(283), jacobian_norm_df.sort_values())
+for i, txt in enumerate(jacobian_norm_df.sort_values().tail(3).index):
+    ax.text(i, jacobian_norm_df.sort_values()[txt], txt)
+plt.xlabel('Rank Sorted Motifs')
+plt.ylabel('Absolute Gradient')
 plt.show()
+# %%
+jacobians.shape
+# %%
+sns.clustermap(np.absolute(jacobians).mean(1), cmap='viridis')
+# %%
+def get_jacobian(model, batch):
+    all_outputs = []
+    input = trainer.model.model.get_input(batch)
+    recursive_cuda(input)   
+    output = model(**input)[0]
+    mask = batch['hic_matrix']==0
+    mask_boundary = np.zeros_like(mask, dtype=bool)
+    mask_boundary[0:10, :] = True
+    mask_boundary[:, 0:10] = True
+    mask_boundary[-10:, :] = True
+    mask_boundary[:, -10:] = True   
+    mask = mask | mask_boundary
+    mask = mask.squeeze()
+    output = output.detach().cpu().numpy()
+    output[mask] = 0
+    for i in tqdm(range(283)):
+
+        input = trainer.model.model.get_input(batch)
+        recursive_cuda(input)
+        from torch.autograd import grad
+        # input['region_motif'].requires_grad = True
+        input['region_motif'][:, :, i] +=0.5
+        output_alt = model(**input)[0]
+        output_alt = output_alt.detach().cpu().numpy()
+        output_alt[mask] = 0
+        output_alt = output_alt-output
+        all_outputs.append(output_alt)
+    return np.array(all_outputs)
+# %%
+grad = get_jacobian(trainer.model.model.cuda(), batch)
+# %%
+grad.shape
+# %%
+sns.heatmap(grad[11], vmin=-1, vmax=1, cmap='coolwarm')
+
 # %%
