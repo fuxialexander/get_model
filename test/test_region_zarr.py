@@ -346,13 +346,14 @@ from get_model.config.config import load_config, pretty_print_config
 
 from get_model.run_region import run_zarr as run
 
-cfg = load_config('h1esc_hic_region_zarr_cnnk1_observe')
+cfg = load_config('h1esc_hic_region_zarr_cnnk1_observe', './')
 pretty_print_config(cfg)
 #%%
 cfg.stage = 'validate'
 cfg.machine.batch_size=1
 cfg.dataset.leave_out_chromosomes = 'chr11'
 cfg.dataset.hic_method='observed'
+cfg.dataset.normalize = True
 # cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt'
 cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/cnnk3_observe_lr0.00015_cosine/checkpoints/last.ckpt'
 # cfg.finetune.resume_ckpt = None
@@ -361,6 +362,8 @@ cfg.finetune.use_lora=False
 cfg.run.use_wandb = False
 cfg.finetune.rename_config = {'model.': '', 'hic_header': 'head_hic'}
 trainer = run(cfg)
+#%%
+
 #%%
 import torch
 
@@ -393,8 +396,16 @@ plt.show()
 for param in trainer.model.parameters():
     param.data[torch.abs(param.data) < 0.05] = torch.tensor(0.)
 
+#%%
+w = trainer.model.model.region_embed.embed.weight.data.cpu().numpy()
+normalizing_factor = region_motif_dataset.region_motifs['H1ESC.4dn_h1esc.4dn_h1esc'].normalizing_factor
+normalizing_factor = np.concatenate((normalizing_factor, [1, 1, 1]))
+normalizing_factor.shape
+# %%
+w / normalizing_factor
 
-
+#%%
+trainer.model.model.region_embed.embed.weight.data = torch.tensor(w / normalizing_factor, dtype=torch.float32)
 
 # %%
 import torch
@@ -516,6 +527,34 @@ def get_jacobian(model, batch):
     jacobian = input['region_motif'].grad
     return jacobian
 
+def get_jacobian_with_mask(model, batch, mask):
+    input = trainer.model.model.get_input(batch)
+    recursive_cuda(input)
+    from torch.autograd import grad
+    input['region_motif'].requires_grad = True
+    output = model(**input)[0]
+    (output[mask].detach()+1-output[mask]).sum().backward(retain_graph=True)
+    jacobian = input['region_motif'].grad
+    return jacobian.detach().cpu().numpy()
+
+def get_full_jacobian(model, batch):
+    """Get jacobian with mask for each element"""
+    jacobians = []
+    for k in range(batch['hic_matrix'].shape[0]):
+        mask = batch['hic_matrix'][k]==0
+        for i in tqdm(range(10, batch['hic_matrix'][k].shape[0]-10)):
+            for j in tqdm(range(10, batch['hic_matrix'][k].shape[1]-10)):
+                mask[i, j] = True
+                mask[j, i] = True
+                mask = mask.squeeze()
+                jac = get_jacobian_with_mask(model, batch, mask)
+                jacobians.append(jac)
+                mask[i, j] = False
+                mask[j, i] = False
+        jacobians = np.concatenate(jacobians)
+        jacobians = jacobians.reshape(batch['hic_matrix'].shape[0]-20, batch['hic_matrix'].shape[1]-20, 400, 283)
+        return jacobians
+
 preds = []
 obs = []
 distance = []
@@ -529,11 +568,13 @@ def recursive_cuda(dict):
             dict[key] = dict[key].cuda()
 from tqdm import tqdm
 for i,batch in tqdm(enumerate(trainer.val_dataloaders)):
+    if i>1:
+        break
     trainer.model.model.to('cuda')
     input = trainer.model.model.get_input(batch)
     recursive_cuda(input)
-    jacobian = get_jacobian(trainer.model.model, batch)
-    jacobian = jacobian[0].detach().cpu().numpy()
+    jacobian = get_full_jacobian(trainer.model.model, batch)
+    # jacobian = jacobian
     jacobians.append(jacobian)
     pred = trainer.model(input)
     a = batch['hic_matrix'][0].cpu().numpy()
@@ -543,6 +584,14 @@ for i,batch in tqdm(enumerate(trainer.val_dataloaders)):
     distance.append(c[10:-10, 10:-10])
     obs.append(a[10:-10, 10:-10])
     preds.append(b[10:-10, 10:-10])
+#%%
+jacobian_contact = jacobian[0,:,10:-10,16].reshape(-1,380)-jacobian[0,:,10:-10,16].reshape(-1,380).mean(0)
+# plot jacobian_contact as heatmap with a in two panel
+fig, ax = plt.subplots(1, 2, figsize=(8, 3))
+sns.heatmap(jacobian_contact+jacobian_contact.T, ax=ax[0], cmap='RdBu', vmin=-500, vmax=500)
+sns.heatmap(a[10:-10, 10:-10], ax=ax[1], cmap='viridis')
+plt.show()
+
 #%%
 # distance stratified pred-obs correlation
 distance = np.concatenate(distance)
@@ -735,4 +784,29 @@ grad.shape
 # %%
 sns.heatmap(grad[11], vmin=-1, vmax=1, cmap='coolwarm')
 
+# %%
+trainer.model.model.region_embed.embed.weight.data
+#%%
+w = trainer.model.model.region_embed.embed.weight.data.cpu().numpy()
+# plot norm of each column vs rank
+norm = np.absolute(w).sum(0)
+plt.scatter(np.arange(len(norm)), norm[np.argsort(norm)])
+for i, txt in enumerate(np.array(list(motif_clusters)+['peak_length', 'distance'])[np.argsort(norm)]):
+    if i>280:
+        plt.text(i, norm[np.argsort(norm)][i], txt)
+plt.show()
+#%%
+# keep top 20 column 
+w = pd.DataFrame(w, columns=list(motif_clusters)+['peak_length', 'distance'])
+# w = w.iloc[:, np.argsort(np.absolute(w).sum(0))[-20:]]
+#%%
+sns.clustermap(w,  method='ward',cmap='RdBu', figsize=(10, 10), z_score=0)
+# %%
+w.mean(0)
+# %%
+sns.scatterplot(x=w.mean(0),y=np.absolute(w).max(0))
+plt.xlabel('Gradient Mean')
+plt.ylabel('Gradient Abs Max')
+plt.show()
+# %%
 # %%

@@ -48,13 +48,19 @@ get_motif_output = get_motif(joint_peaks, peaks_motif)
 
 # %%
 # create peak motif zarr file
-create_peak_motif(get_motif_output, "output.zarr", peak_bed)
+create_peak_motif(get_motif_output, "output.zarr", peak_bed) # region x motif
 # %%
 # add aTPM data for multiple cell types
 add_atpm(
     "output.zarr",
-    "astrocyte.atac.bed",
-    "astrocyte",
+    "tcell.atac.bed",
+    "tcell",
+) # region x 1 (tcell atac TPM)
+
+add_atpm(
+    "output.zarr",
+    "bcell.atac.bed",
+    "bcell",
 )
 # %%
 # add expression and TSS data for multiple cell types
@@ -84,6 +90,7 @@ region_motif_dataset = RegionMotifDataset(
     leave_out_celltypes=None,
     leave_out_chromosomes="chr11",
     is_train=False,
+    hic_path='',
 )
 # %%
 print_shape(region_motif_dataset[0])
@@ -94,7 +101,7 @@ inference_region_motif_dataset = InferenceRegionMotifDataset(
     zarr_path="./output.zarr",
     gencode_obj={'hg38':gencode},
     assembly='hg38',
-    gene_list='RET,MYC,BCL11A',
+    gene_list='RET,MYC,BCL11A,SOX2',
     celltypes="astrocyte",
     quantitative_atac=True,
     num_region_per_sample=200,
@@ -103,7 +110,7 @@ inference_region_motif_dataset = InferenceRegionMotifDataset(
     is_train=True,
 )
 #%%
-print_shape(inference_region_motif_dataset[1])
+print_shape(inference_region_motif_dataset[3])
 
 #%%
 # # Finetune the model
@@ -115,7 +122,8 @@ cfg.run.run_name='training'
 cfg.dataset.zarr_path = "./output.zarr"
 #%%
 # run model training
-cfg.training.epochs=5 # use as demo there
+cfg.training.epochs=10 # use as demo there
+cfg.machine.num_devices=1
 trainer = run(cfg)
 #%%
 # Run inference to get the jacobian matrix for genes
@@ -127,18 +135,19 @@ cfg.finetune.resume_ckpt = trainer.checkpoint_callback.best_model_path
 cfg.run.run_name='interpret'
 #%%
 # run model inference
+cfg.machine.num_devices=0
 run(cfg)
 # %%
 # Load the inference result as a celltype object
 hydra_celltype = GETHydraCellType.from_config(cfg)
-hydra_celltype
-
 # %%
 # Get the jacobian matrix for MYC, summarize by region
 hydra_celltype.get_gene_jacobian_summary('MYC', 'region')
 # %%
 # Get the jacobian matrix for MYC, summarize by motif
-hydra_celltype.get_gene_jacobian_summary('MYC', 'motif').sort_values()
+hydra_celltype.get_gene_jacobian_summary('MYC', 'motif').sort_values().tail(20)*200
+#%%
+
 # %%
 # Run Mutation analysis for one mutation. Multiple mutations can be passed as a comma separated string like 'rs55705857,rs55705857'
 #%%
@@ -147,7 +156,7 @@ hydra_celltype.get_gene_jacobian_summary('MYC', 'motif').sort_values()
 # unzip
 ! gunzip hg38.fa.gz
 #%%
-cfg.machine.fasta_path = 'hg38.fa'
+cfg.machine.fasta_path = '/home/xf2217/Projects/common/hg38.fa'
 cfg.task.mutations = 'rs55705857'
 cfg.dataset.leave_out_celltypes = 'astrocyte'
 cell_mut_col = GETHydraCellMutCollection(cfg)
@@ -157,4 +166,5 @@ cell_mut_col.variant_to_genes
 scores = cell_mut_col.get_all_variant_scores()
 # %%
 scores
+
 # %%

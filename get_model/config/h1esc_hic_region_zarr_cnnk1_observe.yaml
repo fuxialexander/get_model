@@ -15,6 +15,7 @@ dataset:
     leave_out_celltypes: null
     leave_out_chromosomes: 'chr11'
     quantitative_atac: true
+    normalize: false
     sampling_step: 100
     mask_ratio: 0.0
     hic_path: /home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic
@@ -24,7 +25,7 @@ dataset:
 
 training:
   save_ckpt_freq: 1
-  epochs: 1000
+  epochs: 100
   warmup_epochs: 1
   accumulate_grad_batches: 1
   clip_grad: null
@@ -32,7 +33,7 @@ training:
   add_lr_monitor: true
 
 optimizer:
-  lr: 0.00015
+  lr: 0.1
   min_lr: 0.00001
   weight_decay: 0.05
   opt: "adamw"
@@ -41,7 +42,7 @@ optimizer:
 
 run:
   project_name: "h1esc_hic_region_zarr"
-  run_name: "cnnk3_observe_lr0.00015_cosine"
+  run_name: "cnnk3_observe_lr0.00015_cosine_no_normalize.resume_with_lora_from_cnnk3_observe_lr0.00015_cosine"
 
 task:
   layer_names: ['region_embed']
@@ -53,8 +54,9 @@ finetune:
   # resume_ckpt: /home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
   pretrain_checkpoint: false
   use_lora: false
-  checkpoint: null #/home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
-  patterns_to_freeze: []
+  checkpoint: /home/xf2217/output/h1esc_hic_region_zarr/cnnk3_observe_lr0.00015_cosine/checkpoints/last.ckpt
+  # layers_with_lora: ['region_embed']
+  patterns_to_freeze: ['encoder', 'proj_distance', 'head_hic', 'cls_token']
   rename_config:
     "model.": ""
     "hic_header": "head_hic"

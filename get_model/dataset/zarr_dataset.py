@@ -10,8 +10,12 @@ import numpy as np
 import pandas as pd
 import torch
 import zarr
-from caesar.io.gencode import Gencode
-from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
+
+try:
+    from caesar.io.gencode import Gencode
+    from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
+except ImportError:
+    pass
 from pyranges import PyRanges as pr
 from scipy.sparse import coo_matrix, csr_matrix, load_npz, vstack
 from torch.utils.data import Dataset
@@ -3764,6 +3768,7 @@ class RegionMotifConfig:
     root: str
     data: str
     celltype: str
+    normalize: bool = True
     motif_scaler: float = 1.0
     leave_out_motifs: Optional[str] = None
 
@@ -3778,6 +3783,7 @@ class RegionMotif:
         self.motif_scaler = cfg.motif_scaler
         self.leave_out_motifs = cfg.leave_out_motifs
         self.celltype = cfg.celltype
+        self.normalize = cfg.normalize
 
         if self.leave_out_motifs:
             self.leave_out_motifs = [int(m) for m in self.leave_out_motifs.split(",")]
@@ -3826,7 +3832,9 @@ class RegionMotif:
         return len(self.motif_names)
 
     @property
-    def normalize_data(self):
+    def normalized_data(self):
+        if not self.normalize:
+            return self.data
         if hasattr(self, "_normalized_data"):
             return self._normalized_data
         max_values = self.data.max(axis=0)
@@ -3834,6 +3842,13 @@ class RegionMotif:
         normalized_data[normalized_data > 1] = 1
         self._normalized_data = normalized_data
         return normalized_data
+
+    @property
+    def normalizing_factor(self):
+        if not self.normalize:
+            return 1
+        max_values = self.data.max(axis=0)
+        return max_values * self.motif_scaler
 
     def __repr__(self):
         return f"RegionMotif(num_peaks={self.num_peaks}, num_motifs={self.num_motifs}, celltype={self.celltype})"
@@ -3846,6 +3861,7 @@ class RegionMotifDataset(Dataset):
         celltypes: str,
         transform=None,
         quantitative_atac: bool = False,
+        normalize: bool = True,
         sampling_step: int = 50,
         num_region_per_sample: int = 1000,
         leave_out_chromosomes: str | None = None,
@@ -3861,6 +3877,7 @@ class RegionMotifDataset(Dataset):
         self.celltypes = celltypes.split(",")
         self.transform = transform
         self.quantitative_atac = quantitative_atac
+        self.normalize = normalize
         self.sampling_step = sampling_step
         self.num_region_per_sample = num_region_per_sample
         self.leave_out_chromosomes = leave_out_chromosomes.split(",") if leave_out_chromosomes else []
@@ -3924,6 +3941,7 @@ class RegionMotifDataset(Dataset):
                 root=os.path.dirname(self.zarr_path),
                 data=os.path.basename(self.zarr_path),
                 celltype=celltype,
+                normalize=self.normalize,
             )
             region_motifs[celltype] = RegionMotif(cfg)
         return region_motifs
@@ -3961,7 +3979,7 @@ class RegionMotifDataset(Dataset):
         celltype, start_index, end_index = self.sample_indices[index]
         region_motif = self.region_motifs[celltype]
         peaks_i = region_motif.peaks.iloc[start_index:end_index]
-        region_motif_i = region_motif.normalize_data[start_index:end_index]
+        region_motif_i = region_motif.normalized_data[start_index:end_index]
         hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization=self.hic_normalization, method=self.hic_method, resolution=self.hic_resolution)
         if hic_data is not None:
             hic_data = hic_data.astype(np.float32)
@@ -3997,7 +4015,7 @@ class RegionMotifDataset(Dataset):
         celltype, start_index, end_index = self.sample_indices[index]
         region_motif = self.region_motifs[celltype]
 
-        region_motif_i = region_motif.normalize_data[start_index:end_index]
+        region_motif_i = region_motif.normalized_data[start_index:end_index]
         peaks_i = region_motif.peaks.iloc[start_index:end_index]
         atpm = region_motif.atpm[start_index:end_index]
 
@@ -4017,10 +4035,11 @@ class RegionMotifDataset(Dataset):
             region_motif_i = np.concatenate(
                 [region_motif_i, np.ones((region_motif_i.shape[0], 1))], axis=1
             )
-        else:
+        elif self.normalize:
             normalized_atpm = atpm.reshape(-1, 1) / atpm.max()
             region_motif_i = np.concatenate([region_motif_i, normalized_atpm], axis=1)
-
+        else:
+            region_motif_i = np.concatenate([region_motif_i, atpm.reshape(-1, 1)], axis=1)
 
 
         if self.mask_ratio > 0:
@@ -4044,6 +4063,8 @@ class RegionMotifDataset(Dataset):
                     hic_data = hic_data.astype(np.float32)
                 else:
                     hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
+        else:
+            hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
 
         data = {
             "region_motif": region_motif_i.astype(np.float32),
@@ -4075,6 +4096,7 @@ class RegionMotifDataset(Dataset):
 
 class InferenceRegionMotifDataset(RegionMotifDataset):
     def __init__(self, assembly, gencode_obj, gene_list=None, **kwargs):
+        self.gencode_obj = gencode_obj[assembly]
         if isinstance(gene_list, str):
             if "," in gene_list:
                 gene_list = gene_list.split(",")
@@ -4086,7 +4108,6 @@ class InferenceRegionMotifDataset(RegionMotifDataset):
             else self.gencode_obj.gtf["gene_name"].unique()
         )
         super().__init__(**kwargs)
-        self.gencode_obj = gencode_obj[assembly]
 
     def setup(self):
         """Setup focus on gene list"""
@@ -4147,7 +4168,7 @@ class InferenceRegionMotifDataset(RegionMotifDataset):
             self.sample_indices[index]
         )
         region_motif = self.region_motifs[celltype]
-        region_motif_i = region_motif.normalize_data()[start_idx:end_idx]
+        region_motif_i = region_motif.data[start_idx:end_idx]
         peaks_i = region_motif.peaks.iloc[start_idx:end_idx]
         expression_positive = region_motif.expression_positive[start_idx:end_idx]
         expression_negative = region_motif.expression_negative[start_idx:end_idx]

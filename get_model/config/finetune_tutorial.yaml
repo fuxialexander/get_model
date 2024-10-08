@@ -41,7 +41,7 @@ run:
 task:
   layer_names: ['region_embed']
   test_mode: "interpret"
-  gene_list: 'MYC,SOX10,SOX2,RET'
+  gene_list: null
 
 
 finetune:

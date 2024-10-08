@@ -135,16 +135,19 @@ class RegionLitModel(LitModel):
                 return
 
         if "hic" in obs:
-            try:
-                idx = np.random.choice(
+            if obs["hic"].flatten().shape[0] > 1000:
+                try:
+                    idx = np.random.choice(
                     obs["hic"].flatten().shape[0], 1000, replace=False
-                )
-                obs["hic"] = obs["hic"].flatten()[idx]
-                pred["hic"] = pred["hic"].flatten()[idx]
-            except Exception as e:
-                print(obs["hic"].shape)
-                print(pred["hic"].shape)
-
+                    )
+                    obs["hic"] = obs["hic"].flatten()[idx]
+                    pred["hic"] = pred["hic"].flatten()[idx]
+                except Exception as e:
+                    print(obs["hic"].shape)
+                    print(pred["hic"].shape)
+            else:
+                obs['hic'] = torch.randn(1000).to(obs['hic'].device)
+                pred['hic'] = torch.randn(1000).to(pred['hic'].device)
         metrics = self.metrics(pred, obs)
         if batch_idx == 0 and self.cfg.log_image:
             # log one example as scatter plot

@@ -192,6 +192,7 @@ class RegionMotifDatasetConfig:
     zarr_path: str = MISSING
     celltypes: str = MISSING
     transform: Optional[Any] = None
+    normalize: bool = True
     quantitative_atac: bool = False
     sampling_step: int = 50
     num_region_per_sample: int = 1000
@@ -265,6 +266,20 @@ class TrainingConfig:
 @dataclass
 class RunConfig:
     """
+    Configuration for the run.
+
+    Attributes:
+        project_name: Name of the project.
+        run_name: Name of the run.
+    """
+    project_name: str = MISSING
+    run_name: str = MISSING
+    use_wandb: bool = True
+
+@dataclass
+class WandbConfig:
+    """
+    Obsolete, just for compatibility.
     Configuration for the run.
 
     Attributes:
