@@ -410,7 +410,7 @@ trainer.model.model.region_embed.embed.weight.data = torch.tensor(w / normalizin
 # %%
 import torch
 for i,batch in enumerate(trainer.val_dataloaders):
-    if i == 37:
+    if i == 34:
         print(batch['hic_matrix'].shape)
         print(batch['region_motif'].shape)
         # batch['region_motif'][:, 220:250, 282] = batch['region_motif'][:, 220:250, 282] * 0.01
@@ -448,9 +448,11 @@ mask_boundary[:, -10:] = True
 mask = mask_boundary#|mask_eye|mask
 a[mask] = 0
 b[mask] = 0
+mask = (b>0)&(c>0)
+slope, intercept = np.polyfit(c[mask].flatten(), b[mask].flatten(), 1)
 sns.heatmap(a, ax=axs[0], vmin=0, vmax=2, cmap='viridis', cbar=False)
 sns.heatmap(b, ax=axs[1], vmin=0, vmax=2, cmap='viridis', cbar=False)
-sns.heatmap(c, ax=axs[2], vmin=3, vmax=6, cmap='viridis_r', cbar=False)
+sns.heatmap(((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0), ax=axs[2], vmin=0, vmax=1, cmap='viridis', cbar=False)
 axs[0].set_title('Hi-C Matrix')
 axs[1].set_title('Predicted HIC Matrix')
 axs[2].set_title('Distance Map')
@@ -468,19 +470,19 @@ axs[2].set_yticks([])
 # add atpm on bottom of heatmap as line plot
 atpm = batch['region_motif'][0][:, 282].cpu().numpy().flatten()
 ctcf = batch['region_motif'][0][:, 16].cpu().numpy().flatten()
-def get_jacobian(model, batch):
+def get_jacobian(model, batch, mask):
     input = trainer.model.model.get_input(batch)
     from torch.autograd import grad
     input['region_motif'].requires_grad = True
     output = model(**input)[0]
-    (output[~mask].detach()+1-output[~mask]).sum().backward(retain_graph=True)
+    (output[mask].detach()+1-output[mask]).sum().backward(retain_graph=True)
     jacobian = input['region_motif'].grad
     return jacobian
 
-jacobian = get_jacobian(trainer.model.model, batch)
+jacobian = get_jacobian(trainer.model.model, batch, ((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0))
 jacobian = jacobian[0].detach().cpu().numpy()
 axs[3].plot(ctcf)
-axs[4].plot(np.abs(jacobian[:, 16]))
+axs[4].plot(jacobian[:, 16])
 axs[5].plot(np.abs(jacobian).sum(1))
 # make sure the x-axis is the same for all plots and they are all aligned
 for ax in axs:
@@ -498,16 +500,102 @@ for ax in axs[3:]:
     ax.set_yticks([])
 plt.show()
 
+#%%
+motif_clusters = np.loadtxt('/home/xf2217/Projects/geneformer_esc/data/motif_cluster.txt', dtype=str)
 
+pd.DataFrame(jacobian[((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0).sum(0)>0].sum(0), index=motif_clusters).sort_values(by=0, ascending=False).tail(20)
+#%%
+def perturb_region_motif_and_infer(batch, region_idx, motif_idx, delta):
+    """
+    Perturb the region motif by adding delta to the motif_idx-th feature of the region_idx-th sample
+    and infer the resulting hic matrix.
+    """
+    new_batch = batch.copy()
+    new_batch['region_motif'] = batch['region_motif'].clone()
+    new_batch['region_motif'][0, region_idx, motif_idx] += delta
+    pred = trainer.model(trainer.model.model.get_input(new_batch))
+    return pred
 
+# pred = perturb_region_motif_and_infer(batch, 126, 16, 0.01)
 
+from tqdm import tqdm
+def continuous_perturbation(batch, region_idx, motif_idx):
+    """
+    Perturb the region motif by adding delta to the motif_idx-th feature of the region_idx-th sample
+    and infer the resulting hic matrix.
+    """
+    preds = []
+    existing_motif = batch['region_motif'][0, region_idx, motif_idx].detach().cpu().numpy().flatten()
+    print(existing_motif)
+    original_pred = trainer.model(trainer.model.model.get_input(batch))
+    for delta in tqdm(np.arange(-0.01, 0.01, 0.001)):
+        pred = perturb_region_motif_and_infer(batch, region_idx, motif_idx, delta)
+        preds.append(pred[0].detach().cpu().numpy())
+    
+    preds = np.stack(preds)
 
+    return preds,existing_motif_idx
 
+preds,existing_motif_idx = continuous_perturbation(batch, 340, 16)
+#%%
+padding_mask = np.zeros_like(batch['hic_matrix'][0])
+padding_mask[10:-10, 10:-10] = 1
+padding_mask = padding_mask.astype(bool)
+def bulk_z_score(preds):
+    return (preds-preds.mean())/preds.std()
+sns.heatmap((preds[6]*padding_mask), cmap='viridis', vmin=-0.1, vmax=2)
+plt.show()
+#%%
+# a gif of the preds heatmap with seaborn heatmap
+import imageio
+#%%
+def create_gif(preds, filename='preds.gif'):
+    images = []
+    for i in range(len(preds)):
+        sns.heatmap(preds[i]*padding_mask, cmap='RdBu_r', vmin=0, vmax=2)
+        plt.savefig(f'{i}.png')
+        plt.close()
+    images = [imageio.imread(f'{i}.png') for i in range(len(preds))]
+    imageio.mimsave(filename, images, duration=0.2)
 
+create_gif(preds)
+#%% 
+from tqdm import tqdm
+def continuous_perturbation(batch, region_idx, motif_idx):
+    """
+    Perturb the region motif by adding delta to the motif_idx-th feature of the region_idx-th sample
+    and infer the resulting hic matrix.
+    """
+    preds = []
+    existing_motif = batch['region_motif'][0, region_idx, motif_idx].detach().cpu().numpy().flatten()
+    print(existing_motif)
+    original_pred = trainer.model(trainer.model.model.get_input(batch))
+    for delta in tqdm(np.arange(-existing_motif, 1-existing_motif, 0.01)):
+        pred = perturb_region_motif_and_infer(batch, region_idx, motif_idx, delta)
+        preds.append(pred[0].detach().cpu().numpy())
+    
+    preds = np.stack(preds)
 
+    return preds,existing_motif_idx
 
+preds,existing_motif_idx = continuous_perturbation(batch, 340, 16)
+#%%
+padding_mask = np.zeros_like(batch['hic_matrix'][0])
+padding_mask[10:-10, 10:-10] = 1
+padding_mask = padding_mask.astype(bool)
+# a gif of the preds heatmap with seaborn heatmap
+import imageio
 
+def create_gif(preds, filename='preds_large.gif'):
+    images = []
+    for i in range(len(preds)):
+        sns.heatmap(preds[i]*padding_mask, cmap='RdBu_r', vmin=0, vmax=2)
+        plt.savefig(f'{i}_large.png')
+        plt.close()
+    images = [imageio.imread(f'{i}_large.png') for i in range(len(preds))]
+    imageio.mimsave(filename, images, duration=0.2)
 
+create_gif(preds)
 #%%
 def get_jacobian(model, batch):
     input = trainer.model.model.get_input(batch)
@@ -584,6 +672,31 @@ for i,batch in tqdm(enumerate(trainer.val_dataloaders)):
     distance.append(c[10:-10, 10:-10])
     obs.append(a[10:-10, 10:-10])
     preds.append(b[10:-10, 10:-10])
+
+#%%
+# plotly based heatmap
+import plotly.express as px
+import pandas as pd
+
+# Create a heatmap using Plotly
+fig = px.imshow(b, color_continuous_scale='Viridis')
+
+# Update layout for better visibility
+fig.update_layout(
+    title='Heatmap of Random Data',
+    xaxis_title='X-axis',
+    yaxis_title='Y-axis',
+    coloraxis_colorbar=dict(title='Z-axis')
+)
+#%%
+# sns.scatterplot(y=b.flatten(), x=c.flatten(),s=0.5)
+# fit a line using b[(b>0)&(c>0)] and c[(b>0)&(c>0)]
+
+# plot the line
+# sns.lineplot(x=c[mask].flatten(), y=slope*c[mask].flatten()+intercept, color='red')
+# plt.show()
+#%%
+sns.heatmap((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.35), cmap='viridis', vmin=0, vmax=1)
 #%%
 jacobian_contact = jacobian[0,:,10:-10,16].reshape(-1,380)-jacobian[0,:,10:-10,16].reshape(-1,380).mean(0)
 # plot jacobian_contact as heatmap with a in two panel
