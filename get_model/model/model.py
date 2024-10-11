@@ -1513,24 +1513,38 @@ class GETNucleotideMotifAdaptorV3(BaseGETModel):
     def __init__(self, cfg: GETNucleotideMotifAdaptorV3ModelConfig):
         super().__init__(cfg)
         self.motif_scanner = MotifScanner(cfg.motif_scanner)
-        conv_channel = cfg.motif_scanner.num_motif
-        self.proj = nn.Linear(conv_channel, 282)
+        conv_channel = cfg.motif_scanner.num_motif + 2
+        self.conv_blocks = nn.ModuleList([
+            nn.Conv1d(conv_channel, 128, 3, padding=1),
+            ConvBlock(128, 128),
+            ConvBlock(128, 128),
+            ConvBlock(128, 128),
+            ConvBlock(128, 128),
+        ])
+        self.proj = nn.Linear(128, 282)
         self.apply(self._init_weights)
 
     def get_input(self, batch):
-        return {'sequence': batch['sequence'].half()}
+        return {'sequence': batch['sequence']}
 
     def forward(self, sequence):
         x = self.motif_scanner(sequence)
+        x = x.permute(0, 2, 1)
+        for conv in self.conv_blocks:
+            x = conv(x)
+        x = x.permute(0, 2, 1)
         x = self.proj(x)  # B, 282
         x = F.relu(x)
         return x
 
     def before_loss(self, output, batch):
-
-        pred = {'motif': output}
-        obs = {'motif': batch['motif']}
-        print(pred['motif'].sum(), obs['motif'].sum())
+        # add a gaussian noise to the motif
+        non_zero_mask = batch['motif'].sum(dim=-1) != 0
+        # set bounday 20bp to false
+        non_zero_mask[:, :20] = False
+        non_zero_mask[:, -20:] = False
+        obs = {'motif': batch['motif'][non_zero_mask]+torch.randn_like(batch['motif'][non_zero_mask])*0.01}
+        pred = {'motif': output[non_zero_mask]}
         return pred, obs
 
     def generate_dummy_data(self):

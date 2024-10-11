@@ -65,7 +65,7 @@ class NucleotideMotifDataModule(L.LightningDataModule):
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
             drop_last=True,
-            shuffle=True,
+            shuffle=False,
         )
 
     def val_dataloader(self):
@@ -73,6 +73,7 @@ class NucleotideMotifDataModule(L.LightningDataModule):
             self.dataset_val,
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
+            shuffle=False,
             drop_last=True,
         )
 
@@ -82,6 +83,7 @@ class NucleotideMotifDataModule(L.LightningDataModule):
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
             drop_last=True,
+            shuffle=False,
         )
 
     def predict_dataloader(self):
