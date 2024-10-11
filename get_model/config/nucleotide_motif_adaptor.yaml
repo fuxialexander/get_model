@@ -8,20 +8,20 @@ defaults:
 assembly: "hg38"
 
 dataset:
-    sequence_zarr: /home/xf2217/Projects/get_data/hg38.zarr
-    motif_zarr: /home/xf2217/Projects/get_data/hg38_motif.zarr
+    sequence_zarr: ${machine.data_path}/hg38.zarr
+    motif_zarr: ${machine.data_path}/hg38_motif.zarr
     transform: null
-    sequence_length: 500
+    sequence_length: 512
     leave_out_chromosomes: 'chr11'
 
 
 training:
   save_ckpt_freq: 1
-  epochs: 10
-  warmup_epochs: 1
+  epochs: 100
+  warmup_epochs: 0
   accumulate_grad_batches: 1
   clip_grad: null
-  use_fp16: false
+  use_fp16: true
 
 optimizer:
   lr: 0.0001
@@ -34,7 +34,7 @@ optimizer:
 run:
   project_name: "GETNucleotideMotifAdaptorV3"
   run_name: "debug"
-  use_wandb: false
+  use_wandb: true
 
 
 finetune:

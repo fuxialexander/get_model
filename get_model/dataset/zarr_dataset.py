@@ -4282,7 +4282,7 @@ class SequenceMotifConfig:
     motif_zarr: str
     transform: Optional[Callable] = None
     is_train: bool = True
-    sequence_length: int = 512
+    sequence_length: int = 256
     leave_out_chromosomes: str | None = None
 
 
@@ -4299,29 +4299,33 @@ class SequenceMotifDataset(Dataset):
         self.current_chunk = None
         self.current_chrom = None
         self.current_chunk_start = None
-        self.sequence_dataset.load_to_memory_dense()
+        # self.sequence_dataset.load_to_memory_dense()
 
         self.setup()
+        self.randomize_chunks()
     
     def __len__(self):
-        if self.is_train:
-            return 12800
-        else:
-            return 1280
+        return self.sample_size
     
     def setup(self):
         input_chromosomes = _chromosome_splitter(
             self.common_chroms, self.leave_out_chromosomes, self.is_train
         )
-        max_indices = {}
+        self.chunks = []
+        self.sample_size = 0
         for chrom in input_chromosomes:
-            max_indices[chrom] = (self.sequence_dataset.chrom_sizes[chrom] - self.sequence_length)//self.sequence_length
-        
-        sample_size = 0
-        for chrom in input_chromosomes:
-            sample_size += max_indices[chrom]
-        self.max_indices = max_indices
-        self.sample_size = sample_size
+            chrom_size = self.sequence_dataset.chrom_sizes[chrom]
+            num_chunks = (chrom_size - 1) // self.chunk_size + 1
+            for chunk_idx in range(num_chunks):
+                chunk_start = chunk_idx * self.chunk_size
+                chunk_end = min(chunk_start + self.chunk_size, chrom_size)
+                num_samples = (chunk_end - chunk_start - self.sequence_length) // self.sequence_length + 1
+                self.chunks.append((chrom, chunk_start, num_samples))
+                self.sample_size += num_samples
+
+    def randomize_chunks(self):
+        np.random.shuffle(self.chunks)
+        self.chunk_sample_cumsum = np.cumsum([chunk[2] for chunk in self.chunks])
 
     def load_chunk(self, chrom, chunk_start):
         self.current_chrom = chrom
@@ -4333,25 +4337,27 @@ class SequenceMotifDataset(Dataset):
         }
 
     def __getitem__(self, index):
-        for chrom in self.max_indices:
-            if index < self.max_indices[chrom]:
-                break
-            index -= self.max_indices[chrom]
+        chunk_idx = np.searchsorted(self.chunk_sample_cumsum, index, side='right')
+        chrom, chunk_start, _ = self.chunks[chunk_idx]
         
-        i = index
-        start_pos = i * self.sequence_length
-        chunk_start = (start_pos // self.chunk_size) * self.chunk_size
-
+        if chunk_idx > 0:
+            index -= self.chunk_sample_cumsum[chunk_idx - 1]
+        
         if self.current_chrom != chrom or self.current_chunk_start != chunk_start:
             self.load_chunk(chrom, chunk_start)
 
+        start_pos = chunk_start + index * self.sequence_length
         chunk_offset = start_pos - self.current_chunk_start
         sequence = self.current_chunk["sequence"][chunk_offset:chunk_offset + self.sequence_length]
         motif = self.current_chunk["motif"][chunk_offset:chunk_offset + self.sequence_length]
-
+        
+        if sequence.shape[0] < self.sequence_length:
+            sequence = np.pad(sequence, ((0, self.sequence_length - sequence.shape[0]), (0, 0)), mode='constant', constant_values=0)
+            motif = np.pad(motif, ((0, self.sequence_length - motif.shape[0]), (0, 0)), mode='constant', constant_values=0)
+        
         if self.transform:
             return self.transform({"sequence": sequence, "motif": motif})
-        return {"sequence": sequence, "motif": motif}
+        return {"sequence": sequence.astype(np.float16), "motif": motif.astype(np.float16)}
     
     def __repr__(self):
         return f"SequenceMotifDataset(sequence_zarr={self.sequence_dataset.zarr_path}, motif_zarr={self.motif_dataset.zarr_path}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes}, chunk_size={self.chunk_size})"

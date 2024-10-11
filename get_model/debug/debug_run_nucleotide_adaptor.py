@@ -2,12 +2,11 @@ import hydra
 import sys
 import gc
 import torch
-from get_model.run_everything import run 
+from get_model.config.config import Config
+from get_model.run_motif_adaptor import run
 
-from get_model.config.config import *
 
-
-@hydra.main(config_path="../config", config_name="eval_k562_fetal_nucleotide_motif_adaptor", version_base="1.3")
+@hydra.main(config_path="../config", config_name="nucleotide_motif_adaptor", version_base="1.3")
 def main(cfg: Config):
     run(cfg)
 
