@@ -211,6 +211,7 @@ class NucleotideMotifDatasetConfig:
     """
     sequence_zarr: str = MISSING
     motif_zarr: str = MISSING
+    curated_zarr: str | None = None
     transform: Optional[Any] = None
     sequence_length: int = 512
     leave_out_chromosomes: str | None = None

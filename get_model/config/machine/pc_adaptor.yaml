@@ -3,4 +3,4 @@ codebase: "/home/xf2217/Projects/get_model/"
 output_dir: "/home/xf2217/output"
 num_devices: 1
 num_workers: 16
-batch_size: 1024
+batch_size: 64
