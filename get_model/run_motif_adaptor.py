@@ -1,36 +1,25 @@
 import logging
 from functools import partial
-from typing import Callable
 
 import lightning as L
-import pandas as pd
 import seaborn as sns
 import torch
 import torch.utils.data
 import wandb
-import zarr
 from hydra.utils import instantiate
-from lightning.pytorch.core.optimizer import LightningOptimizer
 from matplotlib import pyplot as plt
 from minlora import LoRAParametrization
 from minlora.model import add_lora_by_name
-from omegaconf import MISSING, DictConfig, OmegaConf
-from torch.optim.optimizer import Optimizer
+from omegaconf import DictConfig, OmegaConf
 
 from get_model.config.config import *
-from get_model.dataset.zarr_dataset import (InferenceRegionDataset,
-                                            InferenceRegionMotifDataset,
-                                            RegionDataset, RegionMotifDataset, SequenceMotifDataset,
-                                            get_gencode_obj)
+from get_model.dataset.zarr_dataset import (SequenceMotifDataset, CuratedSequenceMotifDataset)
 from get_model.model.model import *
 from get_model.model.modules import *
-from get_model.optim import LayerDecayValueAssigner, create_optimizer
-from get_model.run import LitModel, get_insulation_overlap, run_shared
-from get_model.utils import (cosine_scheduler, extract_state_dict,
+from get_model.run import LitModel, run_shared
+from get_model.utils import (extract_state_dict,
                              load_checkpoint, load_state_dict,
-                             recursive_concat_numpy, recursive_detach,
-                             recursive_numpy, recursive_save_to_zarr,
-                             rename_state_dict, setup_trainer, setup_wandb)
+                             rename_state_dict)
 
 
 class NucleotideMotifDataModule(L.LightningDataModule):
@@ -40,10 +29,20 @@ class NucleotideMotifDataModule(L.LightningDataModule):
         self.accumulated_results = []
 
     def build_training_dataset(self, is_train=True):
-        return SequenceMotifDataset(**self.cfg.dataset, is_train=is_train)
+        if 'curated_zarr' in self.cfg.dataset:
+            return CuratedSequenceMotifDataset(**self.cfg.dataset, is_train=is_train)
+        elif 'sequence_zarr' in self.cfg.dataset and 'motif_zarr' in self.cfg.dataset:
+            return SequenceMotifDataset(**self.cfg.dataset, is_train=is_train)
+        else:
+            raise ValueError("No supported dataset specified")
 
     def build_inference_dataset(self, is_train=False):
-        return SequenceMotifDataset(**self.cfg.dataset, is_train=is_train)
+        if 'curated_zarr' in self.cfg.dataset:
+            return CuratedSequenceMotifDataset(**self.cfg.dataset, is_train=is_train)
+        elif 'sequence_zarr' in self.cfg.dataset and 'motif_zarr' in self.cfg.dataset:
+            return SequenceMotifDataset(**self.cfg.dataset, is_train=is_train)
+        else:
+            raise ValueError("No supported dataset specified")
 
     def prepare_data(self):
         pass
@@ -65,7 +64,7 @@ class NucleotideMotifDataModule(L.LightningDataModule):
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
             drop_last=True,
-            shuffle=False,
+            shuffle=True,
         )
 
     def val_dataloader(self):
@@ -101,21 +100,52 @@ class RegionLitModel(LitModel):
 
     def validation_step(self, batch, batch_idx):
         loss, pred, obs = self._shared_step(batch, batch_idx, stage='val')
-        # random draw 1000 points
+        pred_motif_mean = pred['original_motif'].reshape(-1, 282).mean(dim=0)
+        obs_motif_mean = obs['original_motif'].reshape(-1, 282).mean(dim=0)
+        # log the max value of each motif
+        if batch_idx == 10 and self.cfg.log_image:
+        #     plt.clf()
+        #     self.logger.experiment.log({
+        #         "scatter_motif_max_pred": wandb.Image(sns.scatterplot(y=pred_motif_max.detach().cpu().numpy().flatten(), x=range(282)))
+        #     })
+        #     plt.clf()
+        #     self.logger.experiment.log({
+        #         "scatter_motif_max_obs": wandb.Image(sns.scatterplot(y=obs_motif_max.detach().cpu().numpy().flatten(), x=range(282)))
+        #     })
+        #     plt.clf()
+        #     self.logger.experiment.log({
+        #         "scatter_motif_max_obs_pred": wandb.Image(sns.scatterplot(y=obs_motif_max.detach().cpu().numpy().flatten(), x=pred_motif_max.detach().cpu().numpy().flatten()))
+        #     })
+            plt.clf()
+            self.logger.experiment.log({
+                "scatter_motif_mean_obs_pred": wandb.Image(sns.scatterplot(y=obs_motif_mean.detach().cpu().numpy().flatten(), x=pred_motif_mean.detach().cpu().numpy().flatten()))
+            })
+        #     plt.clf()
+        #     self.logger.experiment.log({
+        #         "scatter_motif_mean_obs": wandb.Image(sns.scatterplot(y=obs_motif_mean.detach().cpu().numpy().flatten(), x=range(282)))
+        #     })
+        #     plt.clf()
+        #     self.logger.experiment.log({
+        #         "scatter_motif_mean_pred": wandb.Image(sns.scatterplot(y=pred_motif_mean.detach().cpu().numpy().flatten(), x=range(282)))
+        #     })
+        #     plt.clf()
+        #     self.logger.experiment.log({
+        #         "scatter_motif_mean_obs_max_pred": wandb.Image(sns.scatterplot(y=obs_motif_mean.detach().cpu().numpy().flatten(), x=pred_motif_max.detach().cpu().numpy().flatten()))
+        #     })
+        # # random draw 1000 points
         total_points = pred['motif'].flatten().shape[0]
-        sample_points = 1000
+        sample_points = min(1000, total_points)
         zero_mask = torch.randint(0, total_points, (sample_points,))
         pred['motif'] = pred['motif'].flatten()[zero_mask]
         obs['motif'] = obs['motif'].flatten()[zero_mask]
         metrics = self.metrics(pred, obs)
-        if batch_idx == 0 and self.cfg.log_image:
+        if batch_idx == 10 and self.cfg.log_image:
             # log one example as scatter plot
-            for key in pred:
+            for key in ['motif']:
                 plt.clf()
                 if self.cfg.run.use_wandb:
                     self.logger.experiment.log({
-                        f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))
-                })
+                        f"scatter_{key}": wandb.Image(sns.scatterplot(y=pred[key].detach().cpu().numpy().flatten(), x=obs[key].detach().cpu().numpy().flatten()))})
         distributed = self.cfg.machine.num_devices > 1
         self.log_dict(
             metrics, batch_size=self.cfg.machine.batch_size, sync_dist=distributed)
