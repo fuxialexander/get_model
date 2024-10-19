@@ -148,21 +148,23 @@ class MotifScanner(BaseModule):
         self.motif_prior = cfg.motif_prior
         self.learnable = cfg.learnable
         self.has_bias = cfg.has_bias
+        self.output_dim = self.num_kernel
         motifs, motif_names = self.load_pwm_as_kernel(
             include_reverse_complement=cfg.include_reverse_complement)
 
         if cfg.include_reverse_complement and self.bidirectional_except_ctcf:
             self.num_kernel *= 2
             motif_names = motif_names + ['CTCF_fwd', 'CTCF_rev']
+            self.output_dim = len(motif_names)
         elif cfg.include_reverse_complement:
             self.num_kernel *= 2
             motif_names = motif_names + [f"{name}_rev" for name in motif_names]
-
+            self.output_dim = len(motif_names)
         self.motif = nn.Sequential(
             nn.Conv1d(4, self.num_kernel, 29,
                       padding="same", bias=self.has_bias),
-            # nn.BatchNorm1d(num_motif),
-            nn.ReLU(),
+            nn.BatchNorm1d(self.num_kernel),
+            nn.GELU(),
         )
         if self.motif_prior:
             assert (
@@ -213,7 +215,7 @@ class MotifScanner(BaseModule):
         x = x.permute(0, 2, 1)
         if motif_mean_std is not None and self.motif_prior:
             x = self.normalize_motif(x, motif_mean_std)
-        x = F.relu(x)
+        x = F.gelu(x)
         return x
 
     def generate_dummy_data(self, batch_size=1):
@@ -1027,19 +1029,19 @@ class ATACSplitPoolMaxNorm(ATACSplitPool):
         return x
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, groups=1):
         """A resnet block"""
         super(ConvBlock, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, groups=groups)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, stride=stride, padding=padding, groups=groups)
         self.batch_norm1 = nn.BatchNorm1d(out_channels)
         self.batch_norm2 = nn.BatchNorm1d(out_channels)
 
     def forward(self, x):
         out = self.conv1(x)
         out = self.batch_norm1(out)
-        out = F.relu(out)
+        out = F.gelu(out)
         out = self.conv2(out)
         out = self.batch_norm2(out)
-        out = F.relu(out+x)
+        out = F.gelu(out+x)
         return out

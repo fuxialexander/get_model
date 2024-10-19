@@ -1,13 +1,14 @@
 defaults:
   - base_nucleotide_motif_adaptor_config
   - model/GETNucleotideMotifAdaptorV3@_here_
-  - finetune/v1_finetune@finetune
+  - finetune/lightning@finetune
   - machine/pc_adaptor
   - _self_
 
 assembly: "hg38"
 
 dataset:
+    curated_zarr: ${machine.data_path}/hg38_motif_sequence_curated.zarr
     sequence_zarr: ${machine.data_path}/hg38.zarr
     motif_zarr: ${machine.data_path}/hg38_motif.zarr
     transform: null
@@ -24,16 +25,16 @@ training:
   use_fp16: true
 
 optimizer:
-  lr: 0.0001
+  lr: 0.001
   min_lr: 0.0001
-  weight_decay: 0.05
+  weight_decay: 0.001
   opt: "adamw"
   opt_eps: 1e-8
   opt_betas: [0.9, 0.999]
 
 run:
   project_name: "GETNucleotideMotifAdaptorV3"
-  run_name: "debug"
+  run_name: "scratch_282"
   use_wandb: true
 
 
