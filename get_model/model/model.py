@@ -541,6 +541,76 @@ class GETRegionPretrain(BaseGETModel):
             'region_motif': torch.randn(B, R, M).float().abs(),
         }
 
+class GETRegionPretrainV2(BaseGETModel):
+    def __init__(self, cfg: GETRegionPretrainModelConfig):
+        super().__init__(cfg)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.distance_embed = nn.Linear(1, cfg.region_embed.embed_dim)
+        self.peak_length_embed = nn.Linear(1, cfg.region_embed.embed_dim)
+        self.head_mask = nn.Linear(**cfg.head_mask)
+        self.mask_token = nn.Parameter(
+            torch.zeros(1, 1, cfg.mask_token.embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        trunc_normal_(self.mask_token, std=cfg.mask_token.std)
+
+        self.apply(self._init_weights)
+
+    def get_input(self, batch):
+        peak_coord = batch['peak_coord']
+        peak_length = (peak_coord[:, :, 1] - peak_coord[:, :, 0])/1000
+        peak_coord_mean = peak_coord[:, :, 0]
+        # pair-wise distance using torch
+        # Add new dimensions to create column and row vectors
+        peak_coord_mean_col = peak_coord_mean.unsqueeze(
+            2)  # Adds a new axis (column vector)
+        peak_coord_mean_row = peak_coord_mean.unsqueeze(
+            1)  # Adds a new axis (row vector)
+
+        # Compute the pairwise difference
+        distance = torch.log10(
+            (peak_coord_mean_col - peak_coord_mean_row).abs() + 1).unsqueeze(1)
+        region_model = batch['region_motif'].clone()
+        batch['distance_map'] = distance
+        distance_1d = torch.log10((peak_coord_mean - peak_coord_mean.min())/1000+1)
+        batch['distance_1d'] = distance_1d
+        return {
+            'region_motif': region_model,
+            'mask': batch['mask'].unsqueeze(-1).bool(),
+            'distance_map': distance,
+            'distance_1d': distance_1d.unsqueeze(-1),
+            'peak_length': peak_length.unsqueeze(-1)
+        }
+
+    def forward(self, region_motif, distance_map, distance_1d, peak_length, mask):
+        x = self.region_embed(region_motif)
+        distance_embed = self.distance_embed(distance_1d)
+        peak_length_embed = self.peak_length_embed(peak_length)
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        mask_token = self.mask_token.expand(B, N, -1)
+        w = mask.type_as(mask_token)
+        x = x * (1 - w) + mask_token * w
+        x = x + distance_embed + peak_length_embed
+        x = torch.cat((cls_tokens, x), dim=1)
+        x, _ = self.encoder(x)
+        x = x[:, 1:][mask.squeeze()].reshape(-1, C)
+        x_masked = self.head_mask(x).reshape(-1)
+        return x_masked, region_motif, mask
+
+    def before_loss(self, output, batch):
+        x_masked, x_original, loss_mask = output
+        B, _, C = x_original.shape
+        pred = {'masked': x_masked}
+        obs = {'masked': x_original[loss_mask.squeeze()].reshape(-1)}
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, M = 2, 900, 283
+        return {
+            'region_motif': torch.randn(B, R, M).float().abs(),
+        }
+
 
 @dataclass
 class GETRegionFinetuneModelConfig(BaseGETModelConfig):
@@ -953,7 +1023,7 @@ class GETRegionFinetuneHiC(BaseGETModel):
         }
         if real_hic:
             # mask region with no HiC label
-            mask = (hic==0)
+            mask = (hic==0) | (batch['distance_map'].squeeze()>6.3) # 6.3 = log10(2000001)
             # also mask the diagonal
             mask_eye = torch.eye(hic.shape[1], dtype=torch.bool)
             mask_eye = mask_eye.unsqueeze(0).expand(hic.shape[0], -1, -1)
@@ -966,6 +1036,113 @@ class GETRegionFinetuneHiC(BaseGETModel):
             mask = mask | mask_boundary.to(hic.device) | mask_eye.to(hic.device)
             pred['hic'] = pred['hic'][~mask].flatten()
             obs['hic'] = obs['hic'][~mask].flatten()
+            obs['hic'] = obs['hic'].nan_to_num()
+            # set obs['hic'] to pred['hic'] where mask is True
+            # obs['hic'] = torch.where(mask, pred['hic'], obs['hic'])
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, M = 2, 900, 283
+        return {
+            'region_motif': torch.randn(B, R, M).float().abs(),
+            'distance_map': torch.randn(B, R, R).float(),
+        }
+
+class GETRegionFinetuneHiCV2(BaseGETModel):
+    def __init__(self, cfg: GETRegionFinetuneHiCConfig):
+        super().__init__(cfg)
+        self.region_embed = RegionEmbed(cfg.region_embed)
+        self.distance_embed = nn.Linear(1, cfg.embed_dim)
+        self.peak_length_embed = nn.Linear(1, cfg.embed_dim)
+        self.encoder = GETTransformer(**cfg.encoder)
+        self.head_hic = ContactMapHead(cfg.head_hic, activation='none')
+        self.distance_contact_map = DistanceContactHead(
+            cfg.distance_contact_map)
+        self.distance_contact_map.eval()
+        self.proj_distance = nn.Linear(cfg.embed_dim, 128)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        self.apply(self._init_weights)
+
+    def get_input(self, batch, perturb=False):
+        peak_coord = batch['peak_coord']
+        peak_length = (peak_coord[:, :, 1] - peak_coord[:, :, 0])/1000
+        peak_coord_mean = peak_coord[:, :, 0]
+        # pair-wise distance using torch
+        # Add new dimensions to create column and row vectors
+        peak_coord_mean_col = peak_coord_mean.unsqueeze(
+            2)  # Adds a new axis (column vector)
+        peak_coord_mean_row = peak_coord_mean.unsqueeze(
+            1)  # Adds a new axis (row vector)
+
+        # Compute the pairwise difference
+        distance = torch.log10(
+            (peak_coord_mean_col - peak_coord_mean_row).abs() + 1).unsqueeze(1)
+        region_model = batch['region_motif'].clone()
+        batch['distance_map'] = distance
+        distance_1d = torch.log10((peak_coord_mean - peak_coord_mean.min())/1000+1)
+        batch['distance_1d'] = distance_1d
+        # region_model[:, :, -1] = 1 # set atac to binary
+        return {
+            'region_motif': region_model,
+            'distance_map': distance,
+            'distance_1d': distance_1d.unsqueeze(-1),
+            'peak_length': peak_length.unsqueeze(-1)
+        }
+
+    def forward(self, region_motif, distance_map, distance_1d, peak_length):
+        # concat peak_length to the region_motif
+        # region_motif  = torch.cat([region_motif, peak_length.unsqueeze(-1), distance_1d.unsqueeze(-1)], dim=-1)
+        # normalize the input
+        x = self.region_embed(region_motif)
+        distance_embed = self.distance_embed(distance_1d)
+        peak_length_embed = self.peak_length_embed(peak_length)
+        x = x + distance_embed + peak_length_embed
+        B, N, C = x.shape
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x, _ = self.encoder(x)
+        x = x[:, 1:]
+        # to 2d with cross sum
+        x = x.unsqueeze(1) + x.unsqueeze(2)
+        x = self.proj_distance(
+            x).transpose(1, 3).transpose(2, 3)
+
+        hic = self.head_hic(x).squeeze(1)
+        return hic
+
+    def before_loss(self, output, batch):
+        hic_contact_map = output
+        if len(batch['hic_matrix'][0].shape) >= 2:
+            hic = batch['hic_matrix'].to(torch.float16)
+            real_hic = True
+        else:
+            logging.info(
+                f"batch['hic_matrix'] is not a matrix, using the distance contact map instead.")
+            hic = self.distance_contact_map(
+                batch['distance_map']).detach().squeeze(1)
+            real_hic = False
+        pred = {
+            'hic': hic_contact_map,
+        }
+        obs = {
+            'hic': hic.float(),
+        }
+        if real_hic:
+            # mask region with no HiC label
+            mask = (hic==0) | (batch['distance_map'].squeeze()>6.3) # 6.3 = log10(2000001)
+            # also mask the diagonal
+            mask_eye = torch.eye(hic.shape[1], dtype=torch.bool)
+            mask_eye = mask_eye.unsqueeze(0).expand(hic.shape[0], -1, -1)
+            # also mask first and last 3 rows and columns
+            mask_boundary = torch.zeros_like(hic, dtype=torch.bool)
+            mask_boundary[:, 0:10, :] = True
+            mask_boundary[:, -10:, :] = True
+            mask_boundary[:, :, 0:10] = True
+            mask_boundary[:, :, -10:] = True
+            mask = mask | mask_boundary.to(hic.device) | mask_eye.to(hic.device)
+            pred['hic'] = pred['hic'][~mask].flatten()
+            obs['hic'] = obs['hic'][~mask].flatten()
+            obs['hic'] = obs['hic'].nan_to_num()
             # set obs['hic'] to pred['hic'] where mask is True
             # obs['hic'] = torch.where(mask, pred['hic'], obs['hic'])
         return pred, obs
@@ -1539,13 +1716,8 @@ class GETNucleotideMotifAdaptorV3(BaseGETModel):
         return x
 
     def before_loss(self, output, batch):
-        non_zero_mask = batch['motif'] >0 # B, L, M
-        # for each sample and each motif, assume we have n positive elements, we sample n zero elements from the second dims by shuffle the non_zero_mask along the sequence length L, not along B and M
-        non_zero_mask_shuffle = non_zero_mask.clone().cuda()
-        non_zero_mask_shuffle = non_zero_mask_shuffle.index_select(1, torch.randperm(non_zero_mask_shuffle.shape[1]).cuda())
-        non_zero_mask = non_zero_mask+non_zero_mask_shuffle
-        obs = {'motif': batch['motif'][non_zero_mask], 'original_motif': batch['motif'].detach()}
-        pred = {'motif': output[non_zero_mask], 'original_motif': output.detach()}
+        obs = {'motif': batch['motif'], 'original_motif': batch['motif'].detach()}
+        pred = {'motif': output, 'original_motif': output.detach()}
         return pred, obs
 
     def generate_dummy_data(self):

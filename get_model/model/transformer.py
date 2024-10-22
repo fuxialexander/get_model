@@ -10,7 +10,6 @@ try:
     from flash_attn import flash_attn_qkvpacked_func
 except ImportError:
     flash_attn_qkvpacked_func = None
-from axial_attention import AxialAttention
 
 class Attention(nn.Module):
     def __init__(
@@ -266,6 +265,7 @@ class PairedBlock(nn.Module):
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
+        from axial_attention import AxialAttention
         self.norm1 = norm_layer(dim)
         self.axial_attn = AxialAttention(
             dim,

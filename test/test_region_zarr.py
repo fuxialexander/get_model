@@ -271,7 +271,21 @@ sns.heatmap(np.log(mat_cg)-np.log(normmat_r1), ax=ax, cbar=False)
 #%%
 # load the zarr file as a dataset. 
 region_motif_dataset = RegionMotifDataset(
-    "/home/xf2217/Projects/4dn_h1esc/peak_motif/original/H1ESC.4dn_h1esc.4dn_h1esc.peak_motif.zarr/",
+    "/home/xf2217/Projects/get_data/H1_ESC_ATAC_Seq_biological_replicates.4dn_h1esc.4DNESLMCRW2C.max.peak_motif.zarr",
+    celltypes="H1_ESC_ATAC_Seq_biological_replicates.4dn_h1esc.4DNESLMCRW2C.max",
+    quantitative_atac=True,
+    num_region_per_sample=400,
+    leave_out_celltypes=None,
+    leave_out_chromosomes="chr10,chr11",
+    is_train=False,
+    hic_path="/home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic",
+    hic_resolution=5000,
+    hic_method="observed",
+    hic_normalization="NONE"
+)
+
+region_motif_dataset_old = RegionMotifDataset(
+    "/home/xf2217/Projects/4dn_h1esc_old/peak_motif/original/H1ESC.4dn_h1esc.4dn_h1esc.peak_motif.zarr/",
     celltypes="H1ESC.4dn_h1esc.4dn_h1esc",
     quantitative_atac=True,
     num_region_per_sample=400,
@@ -281,9 +295,23 @@ region_motif_dataset = RegionMotifDataset(
     hic_path="/home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic",
     hic_resolution=5000,
     hic_method="observed",
-    hic_normalization="KR"
+    hic_normalization="NONE"
 )
+#%%
+import pandas as pd
+bed = pd.DataFrame(region_motif_dataset[0]['peak_coord'], columns=['start', 'end'])
+bed['score'] = region_motif_dataset[0]['atpm'].flatten()
+bed_old = pd.DataFrame(region_motif_dataset_old[0]['peak_coord'], columns=['start', 'end'])
+bed_old['score'] = region_motif_dataset_old[0]['atpm'].flatten()
+#%%
+# plot the bed file as bar plot
+import matplotlib.pyplot as plt
 
+plt.bar(bed['start'], bed['score'], width=bed['end']-bed['start'], label='new', alpha=0.5)
+plt.bar(bed_old['start'], bed_old['score'], width=bed_old['end']-bed_old['start'], label='old', alpha=0.5)
+plt.legend()
+plt.xlim(329490, 329490+200000)
+plt.show()
 #%%
 mzd = region_motif_dataset.hic_obj.getMatrixZoomData('11', '11', 'observed', 'KR', "BP", 5000)
 numpy_matrix = mzd.getRecordsAsMatrix(11000000, 15000000, 11000000, 15000000)
@@ -346,88 +374,79 @@ from get_model.config.config import load_config, pretty_print_config
 
 from get_model.run_region import run_zarr as run
 
-cfg = load_config('h1esc_hic_region_zarr_cnnk1_observe', './')
+cfg = load_config('h1esc_hic_region_zarr_cnnk1_observe_adapt', './')
 pretty_print_config(cfg)
 #%%
 cfg.stage = 'validate'
 cfg.machine.batch_size=1
-cfg.dataset.leave_out_chromosomes = 'chr11'
-cfg.dataset.hic_method='observed'
+cfg.dataset.leave_out_chromosomes = 'chr12'
+cfg.dataset.hic_method='oe'
+cfg.dataset.hic_normalization='KR'
+# cfg.dataset.zarr_path = '/home/xf2217/Projects/4dn_h1esc_old/peak_motif/original/H1ESC.4dn_h1esc.4dn_h1esc.peak_motif.zarr/'
+# cfg.dataset.zarr_path = '/home/xf2217/Projects/get_data/ATAC_seq_on_HFFc6_with_2_biological_replicates.4dn_h1esc.4DNESMBA9T3L.max.peak_motif.zarr'
+cfg.dataset.zarr_path = '/home/xf2217/Projects/get_data/H1_ESC_ATAC_Seq_biological_replicates.4dn_h1esc.4DNESLMCRW2C.max.peak_motif.zarr'
+# cfg.dataset.celltypes = 'ATAC_seq_on_HFFc6_with_2_biological_replicates.4dn_h1esc.4DNESMBA9T3L.max'
+cfg.dataset.celltypes = 'H1_ESC_ATAC_Seq_biological_replicates.4dn_h1esc.4DNESLMCRW2C.max'
+# cfg.dataset.hic_path = '/home/xf2217/Projects/get_data/4DNFIPC7P27B.hic'
+cfg.dataset.hic_path = '/home/xf2217/Projects/get_data/H1_ESC.hic'
 cfg.dataset.normalize = True
 # cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt'
-cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/cnnk3_observe_lr0.00015_cosine/checkpoints/last.ckpt'
-# cfg.finetune.resume_ckpt = None
+# cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr/cnnk3_observe_lr0.00015_cosine/checkpoints/last.ckpt'
+cfg.finetune.checkpoint = '/home/xf2217/Projects/get_checkpoints/get-v3_h1esc_hic_region_zarr_adapt_2hfxd73d.ckpt'
+# cfg.finetune.checkpoint = '/home/xf2217/output/h1esc_hic_region_zarr_adapt/no_lora_normalize_oe/checkpoints/best.ckpt'
+cfg.finetune.resume_ckpt = None
 cfg.finetune.strict=True
+cfg.dataset.num_region_per_sample = 400
 cfg.finetune.use_lora=False
 cfg.run.use_wandb = False
 cfg.finetune.rename_config = {'model.': '', 'hic_header': 'head_hic'}
 trainer = run(cfg)
-#%%
-
-#%%
-import torch
-
-def count_effective_params(model, threshold=0.05):
-    total_params = 0
-    effective_params = 0
-    lora_params = []
-    for name,param in model.named_parameters():
-        total_params += param.numel()
-        effective_params += (abs(param) > threshold).sum().item()
-        if 'lora' in name:
-            lora_params.append(param.numel())
-    return total_params, effective_params, lora_params
-
-# Usage
-total, effective, lora_params = count_effective_params(trainer.model)
-print(f"Total parameters: {total}")
-print(f"Effective parameters: {effective}")
-print(f"Lora parameters: {sum(lora_params)}")
-# collect all parameters and plot histogram
-import matplotlib.pyplot as plt
-parameters_arr  = []
-for param in trainer.model.parameters():
-    parameters_arr.append(param.flatten().detach().cpu().numpy())
-parameters_arr = np.concatenate(parameters_arr)
-plt.hist(np.log(parameters_arr+1), bins=1000)
-plt.show()
-#%%
-# replace parameters that abs < 0.1 with 0
-for param in trainer.model.parameters():
-    param.data[torch.abs(param.data) < 0.05] = torch.tensor(0.)
-
 #%%
 w = trainer.model.model.region_embed.embed.weight.data.cpu().numpy()
 normalizing_factor = region_motif_dataset.region_motifs['H1ESC.4dn_h1esc.4dn_h1esc'].normalizing_factor
 normalizing_factor = np.concatenate((normalizing_factor, [1, 1, 1]))
 normalizing_factor.shape
 # %%
-w / normalizing_factor
+(w / normalizing_factor).max()
 
 #%%
+import torch
 trainer.model.model.region_embed.embed.weight.data = torch.tensor(w / normalizing_factor, dtype=torch.float32)
-
+#%%
+# save updated model checkpoint
+torch.save(trainer.model.state_dict(), '/home/xf2217/Projects/get_checkpoints/h1esc_hic_region_zarr_cnnk3_observe_lr0.00015_cosine_last_for_unnormalized_data.ckpt')
 # %%
 import torch
 for i,batch in enumerate(trainer.val_dataloaders):
-    if i == 34:
+    if i == 128:
         print(batch['hic_matrix'].shape)
         print(batch['region_motif'].shape)
-        # batch['region_motif'][:, 220:250, 282] = batch['region_motif'][:, 220:250, 282] * 0.01
+        # batch['region_motif'] = batch['region_motif']
+        # batch['atpm'] = 0.8*batch['atpm']
+        # ctcf_idx = batch['region_motif'][:, :, 16]>15
+        # batch['region_motif'][:,:,282][ctcf_idx] = 0
+        # batch['region_motif'][:,:,16][ctcf_idx] = 0
+        # batch['region_motif'][:, :, 16] = 0
+        # batch['region_motif'][:, :, 282] = 0
         # batch['region_motif'][:, 220:250, 17:282] = batch['region_motif'][:, 220:250, 17:282] * 0.01
         trainer.model.model.to('cpu')
         input = trainer.model.model.get_input(batch)
         # input['distance_1d'][:,1:] = input['distance_1d'][:, 1:]
         # input['distance_1d'][:, 0:200] = input['distance_1d'][:, 0:200]
         # reverse input['distance_1d'][:, 200:]
-        # input['distance_1d'][:, 200] = input['distance_1d'][:, 200] 
-        # input['peak_length'][:, 200:300] = torch.flip(input['peak_length'][:, 200:300], dims=[1])
+        # input['peak_length'] = torch.zeros_like(input['peak_length']) + input['peak_length'].mean()
+        # input['distance_1d'][:, 200:] = torch.flip(input['distance_1d'][:, 200:], dims=[1])
+        # input['peak_length'][:, 200:] = torch.flip(input['peak_length'][:, 200:], dims=[1])
+        # input['region_motif'][:, 200:, :] = torch.flip(input['region_motif'][:, 200:, :], dims=[1])
         # input['distance_1d'][:, 200:] = input['distance_1d'][:, 200:]+1
+        # batch['distance_map'][:, 200:, 200:] = input['distance_map'][:, 200:, 200:]+1
         pred = trainer.model(input)
         print(pred.shape)
         a = batch['hic_matrix'][0].cpu().numpy()
         b = pred[0].detach().squeeze().cpu().numpy()
         c = batch['distance_map'][0][0].squeeze().cpu().numpy()
+        # c[0:200, 200:] = c[0:200, 200:]+1
+        # c[200:, 0:200] = c[200:, 0:200]+1
         print(c.shape)
         break
 
@@ -438,21 +457,22 @@ axs = axs.flatten()
 # top row is the hic matrix, the predicted hic matrix, and the distance map
 # bottom row is the atpm, ctcf values, and length adjusted ctcf values
 
-mask = (a==0)
+mask = (a==0) | (c>6.3)
 mask_eye = np.eye(a.shape[0], dtype=bool)
 mask_boundary = np.zeros_like(a, dtype=bool)
 mask_boundary[0:10, :] = True
 mask_boundary[:, 0:10] = True
 mask_boundary[-10:, :] = True
 mask_boundary[:, -10:] = True
-mask = mask_boundary#|mask_eye|mask
+mask = mask_boundary|mask_eye|mask
 a[mask] = 0
 b[mask] = 0
 mask = (b>0)&(c>0)
 slope, intercept = np.polyfit(c[mask].flatten(), b[mask].flatten(), 1)
-sns.heatmap(a, ax=axs[0], vmin=0, vmax=2, cmap='viridis', cbar=False)
-sns.heatmap(b, ax=axs[1], vmin=0, vmax=2, cmap='viridis', cbar=False)
-sns.heatmap(((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0), ax=axs[2], vmin=0, vmax=1, cmap='viridis', cbar=False)
+sns.heatmap(a, ax=axs[0], vmin=0, vmax=1, cmap='viridis', cbar=False)
+sns.heatmap(b, ax=axs[1], vmin=0, vmax=1, cmap='viridis', cbar=False)
+# sns.heatmap(((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0), ax=axs[2], vmin=0, vmax=1, cmap='viridis', cbar=False)
+sns.heatmap(c, ax=axs[2], vmin=3, vmax=6, cmap='viridis_r', cbar=False)
 axs[0].set_title('Hi-C Matrix')
 axs[1].set_title('Predicted HIC Matrix')
 axs[2].set_title('Distance Map')
@@ -479,7 +499,8 @@ def get_jacobian(model, batch, mask):
     jacobian = input['region_motif'].grad
     return jacobian
 
-jacobian = get_jacobian(trainer.model.model, batch, ((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0))
+# ((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0)
+jacobian = get_jacobian(trainer.model.model, batch, mask)
 jacobian = jacobian[0].detach().cpu().numpy()
 axs[3].plot(ctcf)
 axs[4].plot(jacobian[:, 16])
@@ -499,11 +520,17 @@ for ax in axs[3:]:
     ax.set_yticklabels([])
     ax.set_yticks([])
 plt.show()
-
 #%%
+# correlation between predicted hic matrix and observed hic matrix
+np.corrcoef(a.flatten(), b.flatten())
+#%%
+import pandas as pd
 motif_clusters = np.loadtxt('/home/xf2217/Projects/geneformer_esc/data/motif_cluster.txt', dtype=str)
 
-pd.DataFrame(jacobian[((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0).sum(0)>0].sum(0), index=motif_clusters).sort_values(by=0, ascending=False).tail(20)
+pd.DataFrame((batch['region_motif'][0].cpu().numpy()*jacobian)[((b-slope*c-intercept)*(c<6.1)*(c>5)*((b-slope*c-intercept)>0.5)>0).sum(0)>0].sum(0), index=motif_clusters).abs().sort_values(by=0, ascending=False).head(20)
+#%%
+# overall gradient
+pd.DataFrame(np.absolute(batch['region_motif'][0].cpu().numpy()*jacobian).sum(0), index=motif_clusters).sort_values(by=0, ascending=False).head(20)
 #%%
 def perturb_region_motif_and_infer(batch, region_idx, motif_idx, delta):
     """
@@ -826,7 +853,7 @@ motif_clusters = np.loadtxt('/home/xf2217/Projects/geneformer_esc/data/motif_clu
 # most important features (to the right)
 motif_clusters[np.argsort(np.absolute(jacobian).mean(0))[-10:]]
 # find top 20 region with largest overall gradient
-jacobian_norm = jacobian * batch['region_motif'].detach().cpu().numpy()[0]
+jacobian_norm = jacobian #* batch['region_motif'].detach().cpu().numpy()[0]
 jacobian_df = pd.DataFrame(jacobian_norm, columns=motif_clusters).abs()
 jacobian_df['overall'] = jacobian_df.mean(1)
 jacobian_df['overall_but_ctcf_atac'] = jacobian_df.drop(columns=['CTCF', 'Accessibility']).mean(1)

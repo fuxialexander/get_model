@@ -13,12 +13,12 @@ dataset:
     motif_zarr: ${machine.data_path}/hg38_motif.zarr
     transform: null
     sequence_length: 512
-    leave_out_chromosomes: 'chr11'
+    leave_out_chromosomes: 'chr10,chr11'
 
 
 training:
   save_ckpt_freq: 1
-  epochs: 100
+  epochs: 200
   warmup_epochs: 0
   accumulate_grad_batches: 1
   clip_grad: null

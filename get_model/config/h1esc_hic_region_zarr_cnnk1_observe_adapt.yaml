@@ -1,6 +1,6 @@
 defaults:
   - base_region_zarr_config
-  - model/GETRegionFinetuneHiC@_here_
+  - model/GETRegionFinetuneHiCV2@_here_
   - finetune/lightning@finetune
   - machine/pc_hic
   - _self_
@@ -8,24 +8,24 @@ defaults:
 assembly: "hg38"
 
 dataset:
-    zarr_path: /home/xf2217/Projects/4dn_h1esc/peak_motif/original/H1ESC.4dn_h1esc.4dn_h1esc.peak_motif.zarr
-    celltypes: H1ESC.4dn_h1esc.4dn_h1esc
+    zarr_path: ${machine.data_path}/H1_ESC_ATAC_Seq_biological_replicates.4dn_h1esc.4DNESLMCRW2C.max.peak_motif.zarr
+    celltypes: H1_ESC_ATAC_Seq_biological_replicates.4dn_h1esc.4DNESLMCRW2C.max
     num_region_per_sample: 400
     transform: null
     leave_out_celltypes: null
-    leave_out_chromosomes: 'chr11'
+    leave_out_chromosomes: 'chr10,chr11'
     quantitative_atac: true
-    normalize: false
+    normalize: true
     sampling_step: 100
     mask_ratio: 0.0
-    hic_path: /home/xf2217/Projects/geneformer_nat/data/H1_ESC.hic
+    hic_path: ${machine.data_path}/H1_ESC.hic
     hic_resolution: 5000
-    hic_method: "observed" # or observed
-    hic_normalization: "KR"
+    hic_method: "oe" # or observed
+    hic_normalization: "NONE"
 
 training:
   save_ckpt_freq: 1
-  epochs: 100
+  epochs: 1000
   warmup_epochs: 1
   accumulate_grad_batches: 1
   clip_grad: null
@@ -33,7 +33,7 @@ training:
   add_lr_monitor: true
 
 optimizer:
-  lr: 0.1
+  lr: 0.00015
   min_lr: 0.00001
   weight_decay: 0.05
   opt: "adamw"
@@ -41,8 +41,8 @@ optimizer:
   opt_betas: [0.9, 0.95]
 
 run:
-  project_name: "h1esc_hic_region_zarr"
-  run_name: "cnnk3_observe_lr0.00015_cosine_no_normalize.resume_with_lora_from_cnnk3_observe_lr0.00015_cosine"
+  project_name: "h1esc_hic_region_zarr_adapt"
+  run_name: "from_scratch_oe"
 
 task:
   layer_names: ['region_embed']
@@ -51,10 +51,10 @@ task:
 
 
 finetune:
-  # resume_ckpt: /home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
+  resume_ckpt: null #/home/xf2217/output/h1esc_hic_region_zarr_adapt/no_lora_normalize_oe/checkpoints/best.ckpt
   pretrain_checkpoint: false
   use_lora: false
-  checkpoint: /home/xf2217/output/h1esc_hic_region_zarr/cnnk3_observe_lr0.00015_cosine/checkpoints/last.ckpt
+  checkpoint: null #/home/xf2217/output/h1esc_hic_region_zarr/debug_oe/checkpoints/last-v5.ckpt
   # layers_with_lora: ['region_embed']
   patterns_to_freeze: []
   rename_config:

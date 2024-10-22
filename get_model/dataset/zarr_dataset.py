@@ -3965,53 +3965,20 @@ class RegionMotifDataset(Dataset):
 
                 for i in range(idx_peak_start, idx_peak_end, self.sampling_step):
                     shift = np.random.randint(
-                        -self.sampling_step // 2, self.sampling_step // 2
+                        -self.sampling_step // 2, 0
                     )
                     start_index = max(0, i + shift)
                     end_index = start_index + self.num_region_per_sample
-                    if end_index >= peaks.shape[0]:
+                    if i+self.num_region_per_sample >= peaks.shape[0]:
                         continue
                     if (
-                        peaks.iloc[end_index].End - peaks.iloc[start_index].Start
+                        peaks.iloc[i+self.num_region_per_sample].End - peaks.iloc[i].Start
                         > 5000000
                         or peaks.iloc[end_index].End - peaks.iloc[start_index].Start < 0
                     ):
                         continue
                     if end_index < peaks.shape[0]:
                         self.sample_indices.append((celltype, start_index, end_index))
-
-    def cache_hic_i(self, index):
-        celltype, start_index, end_index = self.sample_indices[index]
-        region_motif = self.region_motifs[celltype]
-        peaks_i = region_motif.peaks.iloc[start_index:end_index]
-        region_motif_i = region_motif.normalized_data[start_index:end_index]
-        hic_data = get_hic_from_idx(self.hic_obj, peaks_i, normalization=self.hic_normalization, method=self.hic_method, resolution=self.hic_resolution)
-        if hic_data is not None:
-            hic_data = hic_data.astype(np.float32)
-        else:
-            hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
-        return hic_data
-    
-    def cache_hic(self):
-        z = zarr.open(self.zarr_path, mode="a")
-        if f"hic_cache/{self.is_train}" in z and z.attrs['celltype'] == self.celltypes and z.attrs['quantitative_atac'] == self.quantitative_atac and z.attrs['num_region_per_sample'] == self.num_region_per_sample and z.attrs['leave_out_celltypes'] == self.leave_out_celltypes and z.attrs['leave_out_chromosomes'] == self.leave_out_chromosomes and z.attrs['is_train'] == self.is_train and z.attrs['hic_path'] == self.hic_path:
-            hic_cache = z[f"hic_cache/{self.is_train}"][:]
-            self.hic_cache = hic_cache
-            return
-        else:
-            self.hic_cache = []
-            for index in tqdm(range(len(self.sample_indices))):
-                self.hic_cache.append(self.cache_hic_i(index))
-            self.hic_cache = np.stack(self.hic_cache)
-            # save to zarr
-            z.create_dataset(f"hic_cache/{self.is_train}", data=self.hic_cache, overwrite=True, chunks=(1, self.num_region_per_sample, self.num_region_per_sample))
-            z.attrs['celltype'] = self.celltypes
-            z.attrs['quantitative_atac'] = self.quantitative_atac
-            z.attrs['num_region_per_sample'] = self.num_region_per_sample
-            z.attrs['leave_out_celltypes'] = self.leave_out_celltypes
-            z.attrs['leave_out_chromosomes'] = self.leave_out_chromosomes
-            z.attrs['is_train'] = self.is_train
-            z.attrs['hic_path'] = self.hic_path
 
     def __len__(self):
         return len(self.sample_indices)
@@ -4049,7 +4016,7 @@ class RegionMotifDataset(Dataset):
 
         if self.mask_ratio > 0:
             mask = np.random.choice(
-                [0, 1], size=len(tss), p=[1 - self.mask_ratio, self.mask_ratio]
+                [0, 1], size=len(region_motif_i), p=[1 - self.mask_ratio, self.mask_ratio]
             )
         else:
             mask = tss
@@ -4070,13 +4037,13 @@ class RegionMotifDataset(Dataset):
                     hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
         else:
             hic_data = np.zeros((region_motif_i.shape[0], region_motif_i.shape[0]))
-
+        random_shift = np.random.randint(-10, 10, size=(region_motif_i.shape[0], 2))
         data = {
             "region_motif": region_motif_i.astype(np.float32),
             "mask": mask if mask is not None else np.zeros((region_motif_i.shape[0], 2)),
             "atpm": atpm.reshape(-1, 1),
             "chromosome": peaks_i["Chromosome"].values[0],
-            "peak_coord": peaks_i[["Start", "End"]].values,
+            "peak_coord": peaks_i[["Start", "End"]].values + random_shift,
             "exp_label": target_i.toarray().astype(np.float32) if target_i is not None else np.zeros((region_motif_i.shape[0], 2)),
             "celltype": celltype,
             "hic_matrix": hic_data,
