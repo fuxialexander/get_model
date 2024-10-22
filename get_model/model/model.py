@@ -1539,13 +1539,8 @@ class GETNucleotideMotifAdaptorV3(BaseGETModel):
         return x
 
     def before_loss(self, output, batch):
-        non_zero_mask = batch['motif'] >0 # B, L, M
-        # for each sample and each motif, assume we have n positive elements, we sample n zero elements from the second dims by shuffle the non_zero_mask along the sequence length L, not along B and M
-        non_zero_mask_shuffle = non_zero_mask.clone().cuda()
-        non_zero_mask_shuffle = non_zero_mask_shuffle.index_select(1, torch.randperm(non_zero_mask_shuffle.shape[1]).cuda())
-        non_zero_mask = non_zero_mask+non_zero_mask_shuffle
-        obs = {'motif': batch['motif'][non_zero_mask], 'original_motif': batch['motif'].detach()}
-        pred = {'motif': output[non_zero_mask], 'original_motif': output.detach()}
+        obs = {'motif': batch['motif'], 'original_motif': batch['motif'].detach()}
+        pred = {'motif': output, 'original_motif': output.detach()}
         return pred, obs
 
     def generate_dummy_data(self):

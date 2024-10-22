@@ -98,12 +98,41 @@ class RegionLitModel(LitModel):
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
 
+    def _shared_step(self, batch, batch_idx, stage="train"):
+        input = self.model.get_input(batch)
+        output = self(input)
+        pred, obs = self.model.before_loss(output, batch)
+        epoch = self.trainer.current_epoch
+        if epoch > 100:
+            non_zero_mask = batch['motif'] >=0 # B, L, M
+        else:
+            non_zero_mask = batch['motif'] >0
+            # pred_pos_mask = output >5
+            # for each sample and each motif, assume we have n positive elements, we sample n zero elements from the second dims by shuffle the non_zero_mask along the sequence length L, not along B and M
+            non_zero_mask_shuffle = non_zero_mask.clone().cuda()
+            non_zero_mask_shuffle = non_zero_mask_shuffle.index_select(1, torch.randperm(non_zero_mask_shuffle.shape[1]).cuda())
+            non_zero_mask = non_zero_mask + non_zero_mask_shuffle # + pred_pos_mask
+        obs['motif'] = obs['motif'][non_zero_mask]
+        pred['motif'] = pred['motif'][non_zero_mask]
+        loss = self.loss(pred, obs)
+        # if loss is a dict, rename the keys with the stage prefix
+        distributed = self.cfg.machine.num_devices > 1
+        if stage != "predict":
+            if isinstance(loss, dict):
+                loss = {f"{stage}_{key}": value for key, value in loss.items()}
+                self.log_dict(
+                    loss, batch_size=self.cfg.machine.batch_size, sync_dist=distributed
+                )
+            loss = self.model.after_loss(loss)
+        return loss, pred, obs
+    
     def validation_step(self, batch, batch_idx):
         loss, pred, obs = self._shared_step(batch, batch_idx, stage='val')
         pred_motif_mean = pred['original_motif'].reshape(-1, 282).mean(dim=0)
         obs_motif_mean = obs['original_motif'].reshape(-1, 282).mean(dim=0)
         # log the max value of each motif
-        if batch_idx == 10 and self.cfg.log_image:
+        if batch_idx == 10 and self.cfg.log_image and self.cfg.run.use_wandb:
+        # debugging plots
         #     plt.clf()
         #     self.logger.experiment.log({
         #         "scatter_motif_max_pred": wandb.Image(sns.scatterplot(y=pred_motif_max.detach().cpu().numpy().flatten(), x=range(282)))
@@ -135,9 +164,9 @@ class RegionLitModel(LitModel):
         # # random draw 1000 points
         total_points = pred['motif'].flatten().shape[0]
         sample_points = min(1000, total_points)
-        zero_mask = torch.randint(0, total_points, (sample_points,))
-        pred['motif'] = pred['motif'].flatten()[zero_mask]
-        obs['motif'] = obs['motif'].flatten()[zero_mask]
+        mask = torch.randint(0, total_points, (sample_points,))
+        pred['motif'] = pred['motif'].flatten()[mask]
+        obs['motif'] = obs['motif'].flatten()[mask]
         metrics = self.metrics(pred, obs)
         if batch_idx == 10 and self.cfg.log_image:
             # log one example as scatter plot
