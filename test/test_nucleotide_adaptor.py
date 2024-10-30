@@ -15,10 +15,11 @@ cfg = load_config('nucleotide_motif_adaptor')
 pretty_print_config(cfg)
 #%%
 cfg.stage='validate'
+cfg.machine.batch_size = 200 * 16
 cfg.finetune.resume_ckpt = '/home/xf2217/output/GETNucleotideMotifAdaptorV3/scratch_282/checkpoints/best-v1.ckpt'
 cfg.finetune.checkpoint = '/home/xf2217/output/GETNucleotideMotifAdaptorV3/scratch_282/checkpoints/best-v1.ckpt'
 cfg.run.use_wandb=False
-cfg.dataset.leave_out_chromosomes = 'chr11'
+cfg.dataset.leave_out_chromosomes = None #'chr1'
 trainer = run(cfg)
 #%%
 trainer.model.model.to('cuda')
