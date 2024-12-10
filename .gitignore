@@ -38,5 +38,4 @@ test/abc
 *tsv
 experiments
 evals/*/*png
-
-tutorials/*.zarr
+*.zarr

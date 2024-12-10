@@ -16,6 +16,7 @@ try:
     from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
 except ImportError:
     pass
+from .hic import get_hic_from_idx
 from pyranges import PyRanges as pr
 from scipy.sparse import coo_matrix, csr_matrix, load_npz, vstack
 from torch.utils.data import Dataset
@@ -158,62 +159,6 @@ def apply_indel(arr, start, end, alt_sequence):
     return arr
 
 
-def get_hic_from_idx(hic, csv, start=None, end=None, resolution=5000, method="oe", normalization="SCALE"):
-    # if from hic straw
-    if hasattr(hic, "getMatrixZoomData"):
-        has_chr_suffix = 'chr' in hic.getChromosomes()[1].name
-        if start is not None and end is not None:
-            csv_region = csv.iloc[start:end]
-        else:
-            csv_region = csv
-
-        if not has_chr_suffix:
-            chrom = csv_region.iloc[0].Chromosome.replace("chr", "")
-        else:
-            chrom = csv_region.iloc[0].Chromosome
-        if csv_region.Chromosome.nunique() > 1:
-            return None
-        start = csv_region.iloc[0].Start // resolution
-        end = csv_region.iloc[-1].End // resolution + 1
-        if (end - start) * resolution > 4000000:
-            return None
-        hic_idx = np.array(
-            [row.Start // resolution - start + 1 for _, row in csv_region.iterrows()]
-        )
-
-        mzd = hic.getMatrixZoomData(
-                chrom, chrom, method, normalization, "BP", resolution
-        )
-        numpy_matrix = mzd.getRecordsAsMatrix(
-            start * resolution, end * resolution, start * resolution, end * resolution
-        )
-        numpy_matrix = np.nan_to_num(numpy_matrix)
-        dst = np.log10(numpy_matrix[hic_idx, :][:, hic_idx] + 1)
-        return dst
-    # if from cooler
-    elif hasattr(hic, "matrix"):
-        if start is not None and end is not None:
-            csv_region = csv.iloc[start:end]
-        else:
-            csv_region = csv
-        chrom = csv_region.iloc[0].Chromosome.replace("chr", "")
-        if chrom != csv_region.iloc[-1].Chromosome.replace("chr", ""):
-            return None
-        start = csv_region.iloc[0].Start // resolution
-        end = csv_region.iloc[-1].End // resolution + 1
-        if (end - start) * resolution > 4000000:
-            return None
-        hic_idx = np.array(
-            [row.Start // resolution - start for _, row in csv_region.iterrows()]
-        )
-        numpy_matrix = hic.matrix(balance=True).fetch(
-            f"chr{chrom}:{start * resolution}-{end * resolution}"
-        )
-        numpy_matrix = np.nan_to_num(numpy_matrix)
-        dst = np.log10(numpy_matrix[hic_idx, :][:, hic_idx] + 1)
-        return dst
-
-
 class MotifMeanStd(object):
     """A class that reads the mean and std of motif scores from a zarr file.
     e.g. z['mean_std/chr1']
@@ -321,6 +266,9 @@ class ZarrDataPool(object):
         filter_by_min_depth=None,
         is_train=True,
         hic_path=None,
+        hic_resolution=5000,
+        hic_method="oe",
+        hic_normalization="KR",
     ):
         # Rest of the code
         logging.info("Initializing ZarrDataPool")
@@ -348,6 +296,9 @@ class ZarrDataPool(object):
         self.non_redundant = non_redundant
         self.filter_by_min_depth = filter_by_min_depth
         self.hic_path = hic_path
+        self.hic_resolution = hic_resolution
+        self.hic_method = hic_method
+        self.hic_normalization = hic_normalization
         self.hic_obj = None
         self.initialize_datasets()
         self.calculate_metadata()
@@ -375,9 +326,12 @@ class ZarrDataPool(object):
         }
         self.peaks_dict = self._load_peaks(self.peak_name, self.peak_count_filter)
         self.insulation = self._load_insulation()
-        self.hic_obj = self._load_hic()
+        self.hic_obj = self._load_hic(return_dict=True)
 
-    def _load_hic(self):
+    def _load_hic(self, return_dict=False):
+        """
+        Load hic data from path, return a dict of hic objects
+        """
         try:
             if ".hic" in self.hic_path:
                 try:
@@ -402,7 +356,10 @@ class ZarrDataPool(object):
         except:
             logging.warning("hic file is not found, or the file type is not supported")
             hic_obj = None
-        return hic_obj
+        if return_dict:
+            return {self.hic_path: hic_obj}
+        else:
+            return hic_obj
 
     def _subset_datasets(self):
         """
@@ -987,7 +944,10 @@ class ZarrDataPool(object):
 
             hic_matrix = 0
             if self.hic_obj is not None:
-                hic_matrix = get_hic_from_idx(self.hic_obj, celltype_peaks)
+                hic_matrix = get_hic_from_idx(self.hic_obj, celltype_peaks,
+                                              resolution=self.hic_resolution,
+                                              method=self.hic_method,
+                                              normalization=self.hic_normalization)
                 if hic_matrix is None:
                     hic_matrix = np.zeros((len(celltype_peaks), len(celltype_peaks)))
 
@@ -1374,7 +1334,10 @@ class PreloadDataPack(object):
 
         hic_matrix = None
         if self.zarr_data_pool.hic_obj is not None:
-            hic_matrix = get_hic_from_idx(self.zarr_data_pool.hic_obj, celltype_peaks)
+            hic_matrix = get_hic_from_idx(self.zarr_data_pool.hic_obj, celltype_peaks,
+                                          resolution=self.zarr_data_pool.hic_resolution,
+                                          method=self.zarr_data_pool.hic_method,
+                                          normalization=self.zarr_data_pool.hic_normalization)
             if hic_matrix is None:
                 hic_matrix = np.zeros(
                     (self.n_peaks_upper_bound, self.n_peaks_upper_bound)
@@ -1608,6 +1571,9 @@ class PretrainDataset(Dataset):
         insulation_paths=[],
         insulation_subsample_ratio=0.1,
         hic_path=None,
+        hic_resolution=5000,
+        hic_method="oe",
+        hic_normalization="KR",
         peak_name="peaks",
         additional_peak_columns=None,
         max_peak_length=None,
@@ -1711,6 +1677,9 @@ class PretrainDataset(Dataset):
         self.peak_inactivation = peak_inactivation
         self.mutations = mutations
         self.hic_path = hic_path
+        self.hic_resolution = hic_resolution
+        self.hic_method = hic_method
+        self.hic_normalization = hic_normalization
         # ensure use_insulation is False if hic_path is not None
         if self.hic_path is not None:
             logging.info("hic_path is not None, use_insulation is set to False")
@@ -1746,6 +1715,9 @@ class PretrainDataset(Dataset):
             negative_peak_ratio=self.negative_peak_ratio,
             random_shift_peak=self.random_shift_peak,
             hic_path=self.hic_path,
+            hic_resolution=self.hic_resolution,
+            hic_method=self.hic_method,
+            hic_normalization=self.hic_normalization,
         )
 
         # initialize n_packs preload data packs
@@ -2582,7 +2554,10 @@ class ReferenceRegionDataset(Dataset):
         tssidx_i = tssidx_data[start_index:end_index]
 
         if self.zarr_dataset.datapool.hic_obj is not None:
-            hic_matrix_i = get_hic_from_idx(self.zarr_dataset.datapool.hic_obj, peak_i)
+            hic_matrix_i = get_hic_from_idx(self.zarr_dataset.datapool.hic_obj, peak_i,
+                                            resolution=self.zarr_dataset.hic_resolution,
+                                            method=self.zarr_dataset.hic_method,
+                                            normalization=self.zarr_dataset.hic_normalization)
             if hic_matrix_i is None:
                 # return a matrix with all zeros
                 hic_matrix_i = np.zeros(
@@ -3900,7 +3875,10 @@ class RegionMotifDataset(Dataset):
             self.hic_normalization = hic_normalization
         
 
-    def _load_hic(self):
+    def _load_hic(self, return_dict=False):
+        """
+        Load hic data from path, return a dict of hic objects
+        """
         try:
             if ".hic" in self.hic_path:
                 try:
@@ -3925,7 +3903,10 @@ class RegionMotifDataset(Dataset):
         except:
             logging.warning("hic file is not found, or the file type is not supported")
             hic_obj = None
-        return hic_obj
+        if return_dict:
+            return {self.hic_path: hic_obj}
+        else:
+            return hic_obj
 
     def _load_region_motifs(self) -> Dict[str, RegionMotif]:
         region_motifs = {}
@@ -4383,3 +4364,395 @@ class CuratedSequenceMotifDataset(Dataset):
     def __repr__(self):
         return f"CuratedSequenceMotifDataset(curated_zarr={self.curated_zarr}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes})"
 
+
+class CuratedPeakMotifHiCDataset(Dataset):
+    """Dataset for peak-level motif and HiC data."""
+    
+    def __init__(self, curated_zarr: str, is_train=True, leave_out_chromosomes: Optional[str] = None):
+        """Initialize dataset.
+        
+        Args:
+            curated_zarr (str): Path to zarr store
+            is_train (bool): Whether this is training data
+            leave_out_chromosomes (Optional[str]): Comma-separated list of chromosomes to exclude
+        """
+        self.curated_zarr = curated_zarr
+        self.is_train = is_train
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.zarr_store = zarr.open(self.curated_zarr, mode='r')
+        self.chromosomes = list(self.zarr_store['motifs'].keys())
+        
+        self.setup()
+    
+    def setup(self):
+        """Load data into memory and set up indices."""
+        input_chromosomes = _chromosome_splitter(
+            self.chromosomes, self.leave_out_chromosomes, self.is_train
+        )
+        
+        self.chrom_indices = []
+        self.sample_size = 0
+        self.motifs = {}
+        self.hic = {}
+        self.hic_oe = {}
+        self.peak_coords = {}
+        self.atac = {}
+        
+        for chrom in input_chromosomes:
+            num_samples = len(self.zarr_store['motifs'][chrom])
+            self.chrom_indices.append((chrom, self.sample_size, self.sample_size + num_samples))
+            self.sample_size += num_samples
+            
+            # Load data to memory
+            self.motifs[chrom] = self.zarr_store['motifs'][chrom][:].astype(np.float16)
+            self.hic[chrom] = self.zarr_store['hic'][chrom][:].astype(np.float16)
+            self.hic_oe[chrom] = self.zarr_store['hic_oe'][chrom][:].astype(np.float16)
+            self.peak_coords[chrom] = self.zarr_store['peak_coords'][chrom][:].astype(np.int32)
+            self.atac[chrom] = self.zarr_store['atac'][chrom][:].astype(np.float16)
+    
+    def __len__(self):
+        return self.sample_size
+    
+    def __getitem__(self, index):
+        """Get a single sample.
+        
+        Args:
+            index (int): Sample index
+            
+        Returns:
+            dict: Sample data including motif features, HiC matrices, and distances
+        """
+        chrom, start_idx = self._get_chrom_and_index(index)
+        
+        # Get data for this sample
+        motif = self.motifs[chrom][index - start_idx]
+        atac = self.atac[chrom][index - start_idx]
+        hic = self.hic[chrom][index - start_idx]
+        hic_oe = self.hic_oe[chrom][index - start_idx]
+        peak_coords = self.peak_coords[chrom][index - start_idx]
+
+        # select random consecutive 400 peaks
+        idx = int(np.random.randint(0, 500-400, size=1))
+        motif = motif[idx:idx+400]
+        atac = atac[idx:idx+400]
+        hic = hic[idx:idx+400, idx:idx+400]
+        hic_oe = hic_oe[idx:idx+400, idx:idx+400]
+        peak_coords = peak_coords[idx:idx+400]
+        peak_length = (peak_coords[:,1] - peak_coords[:,0])/1000
+        
+        # Calculate distances
+        peak_mid = (peak_coords[:, 0] + peak_coords[:, 1]) / 2
+        # Add random jitter to peak positions
+        # peak_mid += np.random.randint(-50, 50, size=peak_mid.shape)
+        
+        # Calculate various distance metrics
+        distance_1d = np.log10((peak_mid - peak_mid.min())/1000 + 1)
+        distance_map = np.log10(np.abs(peak_coords[:, 0][:, None] - peak_coords[:, 1][None, :]) + 1)
+        relative_distance = np.diff(peak_mid)
+        relative_distance[relative_distance<0] = 0
+        distance_to_previous = np.log10(np.concatenate([[peak_coords[0, 1]-peak_coords[0, 0]], relative_distance]) + 1)
+        distance_to_next = np.log10(np.concatenate([relative_distance, [peak_coords[-1, 1]-peak_coords[-1, 0]]]) + 1)
+        
+        # Stack distance features
+        distance_1d = np.stack([distance_1d, distance_to_next, distance_to_previous], axis=1)
+        motif = np.concatenate([motif, atac.reshape(-1, 1)], axis=1)
+        sample = {
+            "chrom": chrom,
+            "motif": motif.astype(np.float16),  # shape: num_peaks, num_motifs
+            "atac": atac.reshape(-1, 1).astype(np.float16),  # shape: num_peaks, 1
+            'peak_coords': peak_coords.astype(np.int32),
+            'peak_mid': peak_mid.astype(np.float16),
+            "hic": hic.astype(np.float16),  # shape: num_peaks, num_peaks
+            "hic_oe": hic_oe.astype(np.float16),  # shape: num_peaks, num_peaks
+            "distance_1d": distance_1d.astype(np.float16),  # shape: num_peaks, 3
+            "distance_map": distance_map.astype(np.float16)  # shape: num_peaks, num_peaks
+        }
+        
+        return self.transform(sample)
+    
+    def transform(self, sample):
+        """Apply any transformations to the sample."""
+        return sample
+
+    def _get_chrom_and_index(self, index):
+        """Get chromosome and local index for a global index."""
+        for chrom, start, end in self.chrom_indices:
+            if start <= index < end:
+                return chrom, start
+        raise IndexError("Index out of range")
+    
+    def __repr__(self):
+        return f"CuratedPeakMotifHiCDataset(curated_zarr={self.curated_zarr}, is_train={self.is_train}, leave_out_chromosomes={self.leave_out_chromosomes})" 
+
+class CuratedMotifHiCDataset(Dataset):
+    def __init__(self, curated_zarr: str, is_train=True, leave_out_chromosomes: Optional[str] = None):
+        self.curated_zarr = curated_zarr
+        self.is_train = is_train
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.zarr_store = zarr.open(self.curated_zarr, mode='r')
+        self.chromosomes = list(self.zarr_store['motifs'].keys())
+        
+        self.setup()
+    
+    def setup(self):
+        input_chromosomes = _chromosome_splitter(
+            self.chromosomes, self.leave_out_chromosomes, self.is_train
+        )
+        
+        self.chrom_indices = []
+        self.sample_size = 0
+        self.motifs = {}
+        self.hic = {}
+        self.hic_oe = {}
+        self.peak_coords = {}
+        self.atac = {}
+        for chrom in input_chromosomes:
+            num_samples = len(self.zarr_store['motifs'][chrom]) # number of 400-peak samples
+            self.chrom_indices.append((chrom, self.sample_size, self.sample_size + num_samples))
+            self.sample_size += num_samples
+            # load to memory
+            self.motifs[chrom] = self.zarr_store['motifs'][chrom][:].astype(np.float16)
+            self.hic[chrom] = self.zarr_store['hic'][chrom][:].astype(np.float16)
+            self.hic_oe[chrom] = self.zarr_store['hic_oe'][chrom][:].astype(np.float16)
+            self.peak_coords[chrom] = self.zarr_store['peak_coords'][chrom][:].astype(np.int32)
+            # self.atpm[chrom] = self.zarr_store['atpm'][chrom][:].astype(np.float16)
+            self.atac[chrom] = self.zarr_store['atac'][chrom][:].astype(np.float16)
+    
+    def __len__(self):
+        return self.sample_size
+    
+    def __getitem__(self, index):
+        chrom, start_idx = self._get_chrom_and_index(index)
+        
+        # Get motif data (shape: 400, 64, 282)
+        motif = self.motifs[chrom][index - start_idx][:,:,16:17]
+        motif[motif<10]=10
+        motif = motif-10
+        atac = self.atac[chrom][index - start_idx].reshape(-1, 32, 1)
+        # Get HiC matrix (shape: 400, 400)
+        hic = self.hic[chrom][index - start_idx]
+        hic_oe = self.hic_oe[chrom][index - start_idx]
+        # Get peak coordinates (shape: 400, 2)
+        peak_coords = self.peak_coords[chrom][index - start_idx]
+
+        # select random consecutive 300 peaks
+        idx = int(np.random.randint(0, 500-400, size=1))
+        motif = motif[idx:idx+400]
+        atac = atac[idx:idx+400]
+        hic = hic[idx:idx+400, idx:idx+400]
+        hic_oe = hic_oe[idx:idx+400, idx:idx+400]
+        peak_coords = peak_coords[idx:idx+400]
+
+
+        peak_mid = (peak_coords[:, 0] + peak_coords[:, 1]) / 2
+        # add different random int between -50 and 50 to each element in peak_mid
+        peak_mid += np.random.randint(-50, 50, size=peak_mid.shape)
+        distance_1d = np.log10((peak_mid - peak_mid.min())/1000+ 1)
+        distance_map = np.log10(np.abs(peak_coords[:, 0][:, None] - peak_coords[:, 1][None, :])+1)
+        relative_distance = np.diff(peak_mid)
+        distance_to_previous_element_1d = np.log10(np.concatenate([[peak_coords[0, 1]-peak_coords[0, 0]], relative_distance])+1)
+        distance_to_next_element_1d = np.log10(np.concatenate([relative_distance, [peak_coords[-1, 1]-peak_coords[-1, 0]]])+1)
+
+        
+        # Get atpm (shape: 400) -> (400, 64, 1)
+        # atpm = self.atpm[chrom][index - start_idx]
+        # (shape: 400) -> (400, 64, 1) repeat 64 times
+        # atpm = np.repeat(atpm, 64).reshape(-1, 64, 1)
+        # concat motif and atpm (shape: 400, 16, 283+2)
+        motif = np.concatenate([motif,atac], axis=2)
+        distance_1d = np.stack([distance_1d, distance_to_next_element_1d, distance_to_previous_element_1d], axis=1)
+        
+        sample = {
+            "chrom": chrom,
+            "motif": motif.astype(np.float16), # shape: 400, 32, 1 
+            "atac": atac.astype(np.float16), # shape: 400, 32, 1
+            "hic": hic.astype(np.float16), # shape: 400, 400
+            "hic_oe": hic_oe.astype(np.float16), # shape: 400, 400
+            "distance_1d": distance_1d.astype(np.float16), # shape: 400, 3
+            "distance_map": distance_map.astype(np.float16) # shape: 400, 400
+        }
+        
+        return self.transform(sample)
+    
+    def shuffle_peak_coords(self, sample):
+        # select random consecutive 200 peaks
+        # reverse the order of the peaks, motif, hic and atpm along the 400 dimension
+        sample['motif'] = sample['motif'][::-1].copy()
+        sample['hic'] = sample['hic'][::-1].copy()
+        sample['hic'] = sample['hic'][:, ::-1].copy()
+        sample['hic_oe'] = sample['hic_oe'][::-1].copy()
+        sample['hic_oe'] = sample['hic_oe'][:, ::-1].copy()
+        
+        # sample['atpm'] = sample['atpm'][::-1]
+        sample['distance_map'] = sample['distance_map'][::-1].copy()
+        sample['distance_map'] = sample['distance_map'][:, ::-1].copy()
+        return sample
+    
+    def shuffle_motif(self, sample):
+        # select random region idx along 400
+        idx = np.random.randint(0, 400, size=100)
+        # reverse the order of the motif for selected regions along the 16 dimension
+        sample['motif'][idx, :] = sample['motif'][idx, :][::-1].copy()
+        return sample
+    
+    def transform(self, sample):
+        # if self.is_train:
+            # if np.random.rand() < 0.5:
+                # sample = self.shuffle_peak_coords(sample)
+            # if np.random.rand() < 0.1:
+                # sample = self.shuffle_motif(sample)
+        return sample
+
+    def _get_chrom_and_index(self, index):
+        for chrom, start, end in self.chrom_indices:
+            if start <= index < end:
+                return chrom, start
+        raise IndexError("Index out of range")
+    
+    def __repr__(self):
+        return f"CuratedMotifHiCDataset(curated_zarr={self.curated_zarr}, is_train={self.is_train}, leave_out_chromosomes={self.leave_out_chromosomes})"
+    
+
+class HiCMatrix2MBDataset(Dataset):
+    """Dataset for 2MB window HiC matrix, motif scores, and ATAC signal."""
+    
+    def __init__(self, 
+                 zarr_path: str,
+                 is_train: bool = True,
+                 leave_out_chromosomes: Optional[str] = None,
+                 window_size: int = 2000000,
+                 resolution: int = 5000):
+        """
+        Initialize the dataset.
+        
+        Args:
+            zarr_path: Path to zarr store containing HiC, motif, and ATAC data
+            is_train: Whether this is training set
+            leave_out_chromosomes: Chromosomes to leave out for validation/testing
+            window_size: Size of genomic windows in base pairs
+            resolution: Resolution of HiC matrix in base pairs
+        """
+        self.zarr_path = zarr_path
+        self.is_train = is_train
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.window_size = window_size
+        self.resolution = resolution
+        
+        # Open zarr store
+        self.zarr_store = zarr.open(self.zarr_path, mode='r')
+        self.chromosomes = list(self.zarr_store['hic'].keys())
+        
+        self.setup()
+    
+    def setup(self):
+        """Set up data structures and load data into memory."""
+        input_chromosomes = _chromosome_splitter(
+            self.chromosomes,
+            self.leave_out_chromosomes,
+            self.is_train
+        )
+        
+        # Initialize data structures
+        self.chrom_indices = []  # List of (chrom, start_idx, end_idx) tuples
+        self.sample_size = 0
+        self.hic_matrices = {}
+        self.motif_scores = {}
+        self.atac_signals = {}
+        
+        # Load data for each chromosome
+        for chrom in input_chromosomes:
+            hic_group = self.zarr_store['hic'][chrom]
+            num_windows = len(hic_group)
+            
+            # Store index range for this chromosome
+            self.chrom_indices.append(
+                (chrom, self.sample_size, self.sample_size + num_windows)
+            )
+            self.sample_size += num_windows
+            
+            # Load data into memory
+            self.hic_matrices[chrom] = {
+                start: hic_group[start][:].astype(np.float16)
+                for start in hic_group.keys()
+            }
+            
+            self.motif_scores[chrom] = {
+                start: self.zarr_store['motif'][chrom][start][:, 16:17].astype(np.float16)
+                for start in hic_group.keys()
+            }
+            
+            self.atac_signals[chrom] = {
+                start: self.zarr_store['atac'][chrom][start][:].astype(np.float16)
+                for start in hic_group.keys()
+            }
+    
+    def __len__(self):
+        """Return total number of samples."""
+        return self.sample_size
+    
+    def _get_chrom_and_index(self, index):
+        """Get chromosome and local index for given global index."""
+        for chrom, start, end in self.chrom_indices:
+            if start <= index < end:
+                window_starts = list(self.hic_matrices[chrom].keys())
+                local_idx = index - start
+                if local_idx >= len(window_starts):
+                    raise IndexError("Index out of range")
+                return chrom, window_starts[local_idx]
+        raise IndexError("Index out of range")
+    
+    def __getitem__(self, index):
+        """Get a single sample."""
+        chrom, start = self._get_chrom_and_index(index)
+        start_str = str(start)
+        
+        # Get HiC matrix
+        hic = self.hic_matrices[chrom][start_str]
+        
+        # Get motif scores
+        motif = self.motif_scores[chrom][start_str]
+        motif[motif<5]=5
+        # # get mean of each motif
+        # motif_mean = motif.mean(1)
+        # for i in range(motif.shape[1]):
+        #     motif[:, i][motif[:, i]<motif_mean[i]] = motif_mean[i]
+        # Get ATAC signal
+        atac = self.atac_signals[chrom][start_str]
+        
+        
+        # Prepare sample dictionary
+        sample = {
+            "chrom": chrom,
+            "start": start,
+            "hic": hic,  # shape: (num_bins, num_bins)
+            "motif": np.concatenate([motif, atac.reshape(-1, 1)], axis=1),  # shape: (num_bins, num_features)
+            # "atac": atac,  # shape: (num_bins, num_channels)
+        }
+        
+        return self.transform(sample)
+    
+    def transform(self, sample):
+        """Apply transformations to sample."""
+        # seleted 200 among the 400 regions 
+        start_idx = np.random.randint(0, 500 - 400)
+        sample['motif'] = sample['motif'][start_idx*100:(start_idx+400)*100]
+        sample['hic'] = sample['hic'][start_idx:(start_idx+400), start_idx:(start_idx+400)]
+        return sample
+    
+    def _shuffle_regions(self, sample):
+        """Randomly shuffle regions in the sample."""
+        # Randomly select a contiguous region to shuffle
+        shuffle_idx = np.arange(500)[::-1]
+        shuffle_seq_idx = np.arange(40000)[::-1]
+        # Apply shuffling to all relevant data
+        sample['motif'] = sample['motif'][shuffle_seq_idx]
+        sample['hic'] = sample['hic'][shuffle_idx][:, shuffle_idx]
+        
+        return sample
+    
+    def __repr__(self):
+        return (f"HiCMatrix2MBDataset(zarr_path={self.zarr_path}, "
+                f"is_train={self.is_train}, "
+                f"leave_out_chromosomes={self.leave_out_chromosomes}, "
+                f"window_size={self.window_size}, "
+                f"resolution={self.resolution})")

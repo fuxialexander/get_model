@@ -342,12 +342,6 @@ class OuterProductMean(nn.Module):
         return outer
 
 
-class OuterSum(nn.Module):
-    """
-    from 
-    """
-
-
 @dataclass
 class HiCHeadConfig(BaseConfig):
     """Configuration class for the HiC head.
@@ -1045,3 +1039,224 @@ class ConvBlock(nn.Module):
         out = self.batch_norm2(out)
         out = F.gelu(out+x)
         return out
+    
+
+
+class ResBlock(nn.Module):
+    """2D Residual block with batch normalization and ReLU activation.
+    
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels 
+        kernel_size (tuple): Size of convolutional kernel (height, width)
+        stride (int, optional): Stride of convolution. Defaults to 1.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1):
+        super().__init__()
+        padding = (kernel_size[0] // 2, kernel_size[1] // 2)
+        
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, 
+                              stride=stride, padding=padding, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size,
+                              padding=padding, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # Shortcut connection
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, 
+                         stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+    
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+class ResBlock1d(nn.Module):
+    """1D Residual block with batch normalization and ReLU activation.
+    
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int): Size of convolutional kernel
+        stride (int, optional): Stride of convolution. Defaults to 1.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1):
+        super().__init__()
+        padding = kernel_size // 2
+        
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, 
+                              stride=stride, padding=padding, bias=False)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size,
+                              padding=padding, bias=False)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        
+        # Shortcut connection
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1, 
+                         stride=stride, bias=False),
+                nn.BatchNorm1d(out_channels)
+            )
+    
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+    
+class ResBlock2dDilated(nn.Module):
+    """2D Residual block with dilated convolutions.
+    
+    Args:
+        size (int): Kernel size for convolutions
+        hidden (int, optional): Number of hidden channels. Defaults to 64.
+        stride (int, optional): Stride of convolutions. Defaults to 1.
+        dil (int, optional): Dilation factor. Defaults to 2.
+    """
+    def __init__(self, size, hidden = 64, stride = 1, dil = 2):
+        super(ResBlock2dDilated, self).__init__()
+        pad_len = dil 
+        self.res = nn.Sequential(
+                        nn.Conv2d(hidden, hidden, size, padding = pad_len, 
+                            dilation = dil),
+                        nn.BatchNorm2d(hidden),
+                        nn.ReLU(),
+                        nn.Conv2d(hidden, hidden, size, padding = pad_len,
+                            dilation = dil),
+                        nn.BatchNorm2d(hidden),
+                        )
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        identity = x 
+        res_out = self.res(x)
+        out = self.relu(res_out + identity)
+        return out
+
+class FeatureEncoder(nn.Module):
+    """Encodes genomic features using a series of 1D convolutional blocks.
+    
+    This encoder processes input features through multiple convolutional blocks,
+    each consisting of convolutions, batch normalization, ReLU activation,
+    residual connections, and pooling. The architecture progressively increases
+    the number of channels while reducing sequence length through pooling.
+    
+    Args:
+        in_channels (int, optional): Number of input feature channels. Defaults to 285.
+        hidden_dims (list, optional): List of hidden dimensions for each conv block. 
+            Defaults to [16, 32, 64, 64].
+            
+    Shape:
+        - Input: (batch_size, sequence_length, in_channels)
+        - Output: (batch_size, reduced_sequence_length, hidden_dims[-1])
+        
+    Note:
+        The sequence length is reduced by a factor of 2x2x5x5=100 through pooling
+        operations across the four convolutional blocks.
+    """
+    def __init__(self, in_channels=285, hidden_dims=[16, 32, 64, 64], pool_sizes=[2, 2, 5, 5]):
+        super().__init__()
+        
+        def make_conv_block(in_ch, out_ch, pool_size):
+            return nn.Sequential(
+                nn.Conv1d(in_ch, out_ch, kernel_size=3, padding='same'),
+                nn.BatchNorm1d(out_ch),
+                nn.ReLU(),
+                ResBlock1d(out_ch, out_ch, kernel_size=3),
+                nn.Conv1d(out_ch, out_ch, kernel_size=3, padding='same'),
+                nn.BatchNorm1d(out_ch),
+                nn.ReLU(),
+                ResBlock1d(out_ch, out_ch, kernel_size=3),
+                nn.MaxPool1d(kernel_size=pool_size, stride=pool_size)
+            )
+
+        # Build encoder blocks with progressively increasing channels and pooling
+        self.conv_blocks = nn.ModuleList()
+        for i in range(len(hidden_dims)):
+            in_channels_i = in_channels if i == 0 else hidden_dims[i-1]
+            self.conv_blocks.append(make_conv_block(in_channels_i, hidden_dims[i], pool_size=pool_sizes[i]))
+
+    def forward(self, x):
+        B, S, M = x.shape
+        x = x.permute(0, 2, 1).contiguous()  # (B, M, S)
+        for i in range(len(self.conv_blocks)):
+            x = self.conv_blocks[i](x)
+        return x.permute(0, 2, 1).contiguous()  # (B, S, H)
+
+class symmetrize_bulk(nn.Module):
+    """Module to create symmetric 2D matrices from input features.
+    
+    Takes a 3D tensor (batch, channels, sequence) and creates a symmetric 4D tensor
+    by duplicating along a new dimension and concatenating with its transpose.
+    """
+    def __init__(self):
+        super(symmetrize_bulk, self).__init__()
+
+    def forward(self, x):
+        if len(x.shape) == 2:
+            print("not implemented")
+            return None
+        else:
+            if len(x.shape) == 3:
+                a, b, c = x.shape
+                x = x.reshape(a, b, 1, c)
+                x = x.repeat(1, 1, c, 1)
+                x_t = x.permute(0, 1, 3, 2)
+                x_sym = x * x_t
+                return x_sym
+            else:
+                return None
+
+class Decoder(nn.Module):
+    """Decoder network using dilated residual blocks.
+    
+    Args:
+        in_channel (int): Number of input channels
+        hidden (int, optional): Number of hidden channels. Defaults to 256.
+        filter_size (int, optional): Size of convolutional filters. Defaults to 3.
+        num_blocks (int, optional): Number of residual blocks. Defaults to 5.
+    """
+    def __init__(self, in_channel, hidden = 256, filter_size = 3, num_blocks = 5):
+        super(Decoder, self).__init__()
+        self.filter_size = filter_size
+
+        self.conv_start = nn.Sequential(
+                                    nn.Conv2d(in_channel, hidden, 3, 1, 1),
+                                    nn.BatchNorm2d(hidden),
+                                    nn.ReLU(),
+                                    )
+        self.res_blocks = self.get_res_blocks(num_blocks, hidden)
+        self.conv_end = nn.Conv2d(hidden, 1, 1)
+
+    def forward(self, x):
+        x = self.conv_start(x)
+        x = self.res_blocks(x)
+        out = self.conv_end(x)
+        return out
+
+    def get_res_blocks(self, n, hidden):
+        """Creates a sequence of dilated residual blocks.
+        
+        Args:
+            n (int): Number of blocks
+            hidden (int): Number of hidden channels
+            
+        Returns:
+            nn.Sequential: Sequence of residual blocks with increasing dilation
+        """
+        blocks = []
+        for i in range(n):
+            dilation = 2 ** (i + 1)
+            blocks.append(ResBlock2dDilated(self.filter_size, hidden = hidden, dil = dilation))
+        res_blocks = nn.Sequential(*blocks)
+        return res_blocks

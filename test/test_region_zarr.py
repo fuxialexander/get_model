@@ -262,12 +262,17 @@ normmat_r1 = np.reshape(normmat[:250, :250], (250, 1, 250, 1)).mean(axis=1).mean
 # normmat_r256 = (
 #     np.reshape(normmat[:64000, :64000], (250, 256, 250, 256)).mean(axis=1).mean(axis=2)
 # )
+#%%
 cool = cooler.Cooler('/home/xf2217/Projects/get_data/resources/4DNFI643OYP9.rebinned.mcool::/resolutions/4000')
-mat = cool.matrix(balance=True).fetch('chr11:51000000-52000000')
-mat_raw = cool.matrix(balance=False).fetch('chr11:51000000-52000000')
+mat = cool.matrix(balance=True).fetch('chr1:10000000-22000000')
+mat_raw = cool.matrix(balance=False).fetch('chr1:10000000-22000000')
 mat_cg = _adaptive_coarsegrain(mat, mat_raw) 
 fig, ax = plt.subplots(figsize=(3, 3))
-sns.heatmap(np.log(mat_cg)-np.log(normmat_r1), ax=ax, cbar=False)
+# set ppi to 100
+fig.set_dpi(100)
+mat = np.nan_to_num(mat_raw)
+
+sns.heatmap(mat, ax=ax, cbar=False)
 #%%
 # load the zarr file as a dataset. 
 region_motif_dataset = RegionMotifDataset(

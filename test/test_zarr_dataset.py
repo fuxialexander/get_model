@@ -14,13 +14,28 @@ from get_model.dataset.zarr_dataset import PretrainDataset, ZarrDataPool, Preloa
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 #%% 
-pretrain = PretrainDataset(zarr_dirs=['/pmglocal/xf2217/get_data/shendure_fetal_dense.zarr',
-                            ],
-                           genome_seq_zarr='/pmglocal/xf2217/get_data/hg38.zarr', 
-                           genome_motif_zarr='/pmglocal/xf2217/get_data/hg38_motif_result.zarr', insulation_paths=[
-                           '/pmglocal/xf2217/get_model/data/hg38_4DN_average_insulation.ctcf.adjecent.feather', '/pmglocal/xf2217/get_model/data/hg38_4DN_average_insulation.ctcf.longrange.feather'], , peak_name='peaks_q0.01_tissue_open_exp', preload_count=100, n_packs=1,
-                           max_peak_length=5000, center_expand_target=500, n_peaks_lower_bound=10, n_peaks_upper_bound=100, use_insulation=False, leave_out_celltypes='Astrocyte', leave_out_chromosomes='chr1', is_train=False, dataset_size=65536, additional_peak_columns=None, hic_path='/burg/pmg/users/xf2217/get_data/4DNFI2TK7L2F.hic')
+pretrain = PretrainDataset(zarr_dirs=['/home/xf2217/Projects/get_data/4dn_h1esc_dense.zarr'],
+                           genome_seq_zarr='/home/xf2217/Projects/get_data/hg38.zarr', 
+                           genome_motif_zarr='/home/xf2217/Projects/get_data/hg38_motif.zarr', 
+                           insulation_paths=[
+                           '/home/xf2217/Projects/get_model/data/hg38_4DN_average_insulation.ctcf.adjecent.feather', 
+                           '/home/xf2217/Projects/get_model/data/hg38_4DN_average_insulation.ctcf.longrange.feather'], 
+                           peak_name='peaks_tissue_open', preload_count=100, n_packs=1,
+                           max_peak_length=5000, center_expand_target=500, n_peaks_lower_bound=10, n_peaks_upper_bound=400, 
+                           use_insulation=False, leave_out_celltypes=None, leave_out_chromosomes='chr1', 
+                           is_train=False, dataset_size=65536, 
+                           additional_peak_columns=None, 
+                           hic_path='/home/xf2217/Projects/get_data/4DNFIPC7P27B.hic',
+                           hic_resolution=5000,
+                           hic_method="oe",
+                           hic_normalization="KR",
+                           )
 pretrain.__len__()
+#%%
+print(pretrain[10]['hic_matrix'].shape)
+#%%
+for i in tqdm(range(1000)):
+    print(pretrain[i]['hic_matrix'].shape)
 #%%
 from get_model.dataset.zarr_dataset import worker_init_fn_get
 data_loader_train = torch.utils.data.DataLoader(

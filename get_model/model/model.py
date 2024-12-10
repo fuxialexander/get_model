@@ -10,18 +10,37 @@ from hydra.utils import instantiate
 from omegaconf import MISSING, DictConfig
 from torch.nn.init import trunc_normal_
 
-from get_model.model.modules import (ATACHead, ATACHeadConfig, ContactMapHead, ContactMapHeadConfig, ConvBlock, DistanceContactHead, DistanceContactHeadConfig, HiCHead, HiCHeadConfig,
+from get_model.model.modules import (ATACHead, ATACHeadConfig, ContactMapHead, ContactMapHeadConfig, ConvBlock, Decoder, DistanceContactHead, DistanceContactHeadConfig, FeatureEncoder, HiCHead, HiCHeadConfig,
                                      ATACSplitPool,
                                      ATACSplitPoolConfig, ATACSplitPoolMaxNorm,
                                      ATACSplitPoolMaxNormConfig, BaseConfig,
                                      BaseModule, ConvPool, ConvPoolConfig,
                                      ExpressionHead, ExpressionHeadConfig,
                                      MotifScanner, MotifScannerConfig,
-                                     RegionEmbed, RegionEmbedConfig, SplitPool, SplitPoolConfig)
-from get_model.model.position_encoding import AbsolutePositionalEncoding
+                                     RegionEmbed, RegionEmbedConfig, SplitPool, SplitPoolConfig, symmetrize_bulk)
+from get_model.model.position_encoding import AbsolutePositionalEncoding, CorigamiPositionalEncoding
 from get_model.model.transformer import GETTransformer, GETTransformerWithContactMap, GETTransformerWithContactMapAxial, GETTransformerWithContactMapOE
 
 
+def print_model_summary(model, input_shape1, input_shape2):
+    """Helper function to print model's layer shapes"""
+    device = next(model.parameters()).device
+    x1 = torch.randn(input_shape1).to(device)
+    x2 = torch.randn(input_shape2).to(device)
+    
+    def hook_fn(m, i, o):
+        print(f"{m.__class__.__name__:25} | input: {[tuple(x.shape) for x in i]} | output: {tuple(o.shape)}")
+    
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.MaxPool2d, ResBlock)):
+            hooks.append(module.register_forward_hook(hook_fn))
+    
+    model(x1, x2)
+    
+    for hook in hooks:
+        hook.remove()
+        
 class MNLLLoss(nn.Module):
     def __init__(self):
         """
@@ -1911,7 +1930,6 @@ class GETNucleotideRegionFinetuneExpHiCAxial(BaseGETModel):
         }
 
 
-
 @dataclass
 class GETNucleotideRegionFinetuneExpConfig(BaseGETModelConfig):
     motif_scanner: MotifScannerConfig = field(
@@ -2230,3 +2248,155 @@ class GETNucleotideRegionFinetuneExpHiCABC(BaseGETModel):
             'peak_coord': torch.randn(B, R, 1).float(),
             'distance_map': torch.randn(B, R, R).float(),
         }
+
+
+@dataclass
+class ConvTransHiCConfig(BaseGETModelConfig):
+    pooling_size: int = 100
+    feature_dim: int = 2
+    hidden_dim: int = 64
+
+
+class ConvTransHiC(BaseGETModel):
+    """Hi-C interaction prediction model combining convolutional and transformer components.
+    
+    Inspired by ChromaFold (Encoder) and C. Origami (Decoder). Takes genomic features as input
+    and predicts Hi-C interaction matrices.
+    
+    Args:
+        feature_dim (int, optional): Dimension of input features. Defaults to 285.
+        hidden_dim (int, optional): Hidden dimension size. Defaults to 64.
+    """
+    def __init__(self, cfg: ConvTransHiCConfig):
+        super().__init__()
+        self.input_pooling = nn.Sequential(
+            nn.MaxPool1d(cfg.pooling_size),
+            symmetrize_bulk()
+        )
+        self.feature_encoder = FeatureEncoder(cfg.feature_dim)
+        self.positional_encoding = AbsolutePositionalEncoding(cfg.hidden_dim)
+        self.transformer = GETTransformer(
+            num_layers=8,
+            num_heads=8,
+            embed_dim=cfg.hidden_dim,
+        )
+        self.decoder = Decoder((cfg.hidden_dim+cfg.feature_dim)*2, cfg.hidden_dim)
+        
+    def forward(self, motif_features):
+        # Pool and symmetrize input features
+        x_pool = self.input_pooling(motif_features.permute(0, 2, 1))
+        
+        # Encode features
+        x = self.feature_encoder(motif_features)
+        B, R, H = x.shape
+
+        # Add positional encoding and run transformer
+        x = self.positional_encoding(x)
+        x, _ = self.transformer(x)
+        
+        # Create symmetric 2D output
+        x = symmetrize_bulk()(x.permute(0, 2, 1))
+        x = torch.cat((x, x_pool), dim=1)
+        
+        # Final prediction
+        output_matrix = self.decoder(x).squeeze(1)
+        output_matrix = 0.5*(output_matrix + output_matrix.permute(0, 2, 1))
+        
+        return output_matrix
+
+    def get_input(self, batch):
+        return {
+            'motif_features': batch['motif']
+        }
+    
+    def before_loss(self, output, batch):
+        hic_pred = output
+        hic_target = batch['hic']
+        mask = torch.ones_like(hic_target).bool()
+        mask[hic_target == 0] = 0
+        # remove values on the diagonal
+        # mask &= (torch.eye(hic_target.size(1)).bool().to(hic_target.device)) == 0
+        # remove values on boundary 10 rows and columns
+        # mask[:, :50, :50] = 0
+        # mask[:, -50:, -50:] = 0
+        # mask[:, :50, -50:] = 0
+        # mask[:, -50:, :50] = 0
+        hic_pred = hic_pred[mask]
+        hic_target = hic_target[mask]
+        pred = {'hic': hic_pred}
+        obs = {'hic': hic_target}
+        return pred, obs
+        
+    def generate_dummy_data(self):
+        return {
+            'motif_features': torch.randn(2, 400, 2)
+        }
+    
+
+@dataclass
+class GETFinetuneHiCV2Config(BaseGETModelConfig):
+    motif_adaptor: GETNucleotideMotifAdaptorV3ModelConfig = field(
+        default_factory=GETNucleotideMotifAdaptorV3ModelConfig)
+    hic: ConvTransHiCConfig = field(default_factory=ConvTransHiCConfig)
+
+class GETFinetuneHiCV2(BaseGETModel):
+    def __init__(self, cfg: GETFinetuneHiCV2Config):
+        super().__init__(cfg)
+        self.motif_adaptor = GETNucleotideMotifAdaptorV3(cfg.motif_adaptor)
+        self.hic = ConvTransHiC(cfg.hic)
+
+    def get_input(self, batch):
+        return self.motif_adaptor.get_input(batch)
+
+    def before_loss(self, output, batch):
+        return self.hic.before_loss(output, batch)
+    
+    def generate_dummy_data(self):
+        return self.motif_adaptor.generate_dummy_data()
+    
+    def forward(self, batch):
+        motif_scanning_result = self.motif_adaptor(batch['motif'])
+        motif_features = self.process_motif_scanning_result(motif_scanning_result, batch['atac'])
+        return self.hic(motif_features)
+
+    def process_motif_scanning_result(self, motif_scanning_result, atac_signal, motif_indices=[16], bin_size=50):
+        """Process motif scanning results and ATAC signal.
+        
+        Args:
+            motif_scanning_result: Tensor of shape (batch, seq_len, num_motifs)
+            atac_signal: Optional tensor of shape (batch, seq_len)
+            motif_indices: Optional list of motif indices to select
+        
+        Returns:
+            Processed and concatenated motif and ATAC features
+        """
+        batch_size, seq_len, num_motifs = motif_scanning_result.shape
+        
+        # Reshape to (batch, num_bins, bin_size, num_motifs) and take max per bin
+        num_bins = seq_len // bin_size
+        motif_binned = motif_scanning_result.reshape(batch_size, num_bins, bin_size, num_motifs)
+        motif_binned = motif_binned.max(dim=2)  # (batch, num_bins, num_motifs)
+        
+        # Apply per-motif cutoffs (similar to motif[motif<5]=5 in dataset)
+        motif_cutoff = 5.0  # Can be made configurable per motif if needed
+        motif_binned = torch.relu(motif_binned - motif_cutoff)
+        
+        # Select specific motifs if requested
+        if motif_indices is not None:
+            motif_binned = motif_binned[:, :, motif_indices]
+        # if only 2 dim, unsqueeze to add motif dimension
+        if motif_binned.dim() == 2:
+            motif_binned = motif_binned.unsqueeze(-1)
+        
+        # Process ATAC signal if provided
+        if atac_signal is not None:
+            atac_binned = atac_signal.reshape(batch_size, num_bins, bin_size)
+            atac_binned = atac_binned.mean(dim=2)  # (batch, num_bins)
+            atac_binned = atac_binned.unsqueeze(-1)  # (batch, num_bins, 1)
+            
+            # Concatenate motif scores with ATAC signal, keep only motif 16 (CTCF)
+            features = torch.cat([motif_binned[:, :, 16:17], atac_binned], dim=-1)
+        else:
+            features = motif_binned[:, :, 16:17]
+        
+        return features
