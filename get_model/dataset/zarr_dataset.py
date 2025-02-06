@@ -10,17 +10,21 @@ import numpy as np
 import pandas as pd
 import torch
 import zarr
+from gcell._settings import get_setting
+from gcell.rna.gencode import Gencode
 
 try:
-    from caesar.io.gencode import Gencode
     from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
 except ImportError:
     pass
-from .hic import get_hic_from_idx
 from pyranges import PyRanges as pr
 from scipy.sparse import coo_matrix, csr_matrix, load_npz, vstack
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
+from .hic import get_hic_from_idx
+
+annotation_dir = get_setting('annotation_dir')
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -163,19 +167,19 @@ class MotifMeanStd(object):
     """A class that reads the mean and std of motif scores from a zarr file.
     e.g. z['mean_std/chr1']
     """
+    pass
+    # def __init__(self, zarr_path):
+    #     import glob
 
-    def __init__(self, zarr_path):
-        import glob
-
-        self.zarr_path = zarr_path
-        self.zarr = zarr.open(zarr_path, mode="r")
-        self.chromosomes = [
-            basename(path) for path in glob.glob(os.path.join(zarr_path, "mean_std/*"))
-        ]
-        self.data_dict = {
-            chromosome: self.zarr["mean_std/" + chromosome][:]
-            for chromosome in self.chromosomes
-        }
+    #     self.zarr_path = zarr_path
+    #     self.zarr = zarr.open(zarr_path, mode="r")
+    #     self.chromosomes = [
+    #         basename(path) for path in glob.glob(os.path.join(zarr_path, "mean_std/*"))
+    #     ]
+    #     self.data_dict = {
+    #         chromosome: self.zarr["mean_std/" + chromosome][:]
+    #         for chromosome in self.chromosomes
+    #     }
 
 
 def get_sequence_obj(genome_seq_zarr: dict | str):
@@ -194,17 +198,22 @@ def get_sequence_obj(genome_seq_zarr: dict | str):
     return sequence_obj
 
 
-def get_gencode_obj(genome_seq_zarr: dict | str, gtf_dir: str = "."):
+def get_gencode_obj(genome_seq_zarr: dict | str):
     """
     Get Gencode object for genome sequence.
     """
+    # TODO: make this more flexible
+    version_mapping = {
+        'hg38': 44,
+        'mm10': 'm36',
+    }
     if isinstance(genome_seq_zarr, dict):
         gencode_obj = {}
         for assembly, _ in genome_seq_zarr.items():
-            gencode_obj[assembly] = Gencode(assembly, gtf_dir=gtf_dir)
+            gencode_obj[assembly] = Gencode(assembly, version=version_mapping[assembly])
     elif isinstance(genome_seq_zarr, str):
         assembly = basename(genome_seq_zarr).split(".")[0]
-        gencode_obj = {assembly: Gencode(assembly, gtf_dir=gtf_dir)}
+        gencode_obj = {assembly: Gencode(assembly, version=version_mapping[assembly])}
     return gencode_obj
 
 
@@ -3751,6 +3760,7 @@ class RegionMotifConfig:
     normalize: bool = True
     motif_scaler: float = 1.0
     leave_out_motifs: Optional[str] = None
+    drop_zero_atpm: bool = True
 
 
 class RegionMotif:
@@ -3764,7 +3774,7 @@ class RegionMotif:
         self.leave_out_motifs = cfg.leave_out_motifs
         self.celltype = cfg.celltype
         self.normalize = cfg.normalize
-
+        self.drop_zero_atpm = cfg.drop_zero_atpm
         if self.leave_out_motifs:
             self.leave_out_motifs = [int(m) for m in self.leave_out_motifs.split(",")]
 
@@ -3784,19 +3794,41 @@ class RegionMotif:
 
     def _load_celltype_data(self):
         self.atpm = self.dataset[f"atpm/{self.celltype}"][:]
+        if self.drop_zero_atpm:
+            atpm_nonzero_idx = np.nonzero(self.atpm)[0]
+            self.atpm = self.atpm[atpm_nonzero_idx]
+            self.peak_names = self.peak_names[atpm_nonzero_idx]
+            self.data = self.data[atpm_nonzero_idx]
+            self._peaks = self._peaks.iloc[atpm_nonzero_idx]
+
         if f"expression_positive/{self.celltype}" in self.dataset:  
             self.expression_positive = self.dataset[f"expression_positive/{self.celltype}"][:]
             self.expression_negative = self.dataset[f"expression_negative/{self.celltype}"][:]
             self.tss = self.dataset[f"tss/{self.celltype}"][:]
+
+
             gene_idx_info_index = self.dataset["gene_idx_info_index"][:]
             gene_idx_info_name = self.dataset["gene_idx_info_name"][:]
             gene_idx_info_strand = self.dataset["gene_idx_info_strand"][:]
-            self.gene_idx_info = pd.DataFrame(
-            {
+
+            if self.drop_zero_atpm:
+                self.expression_positive = self.expression_positive[atpm_nonzero_idx]
+                self.expression_negative = self.expression_negative[atpm_nonzero_idx]
+                self.tss = self.tss[atpm_nonzero_idx]
+                idx_to_nonzero_idx = {i: atpm_nonzero_idx[i] for i in range(len(atpm_nonzero_idx))}
+                gene_idx_info_drop_zero_atpm = []
+                for i in gene_idx_info_index: 
+                    if i in idx_to_nonzero_idx:
+                        gene_idx_info_drop_zero_atpm.append(idx_to_nonzero_idx[i], gene_idx_info_name[i], gene_idx_info_strand[i])
+                gene_idx_info_drop_zero_atpm = pd.DataFrame(gene_idx_info_drop_zero_atpm, columns=["index", "gene_name", "strand"])
+                self.gene_idx_info = gene_idx_info_drop_zero_atpm
+            else:
+                self.gene_idx_info = pd.DataFrame(
+                {
                 "index": gene_idx_info_index,
                 "gene_name": gene_idx_info_name,
                 "strand": gene_idx_info_strand,
-            }
+                }
         )
 
     @property
@@ -4756,3 +4788,4 @@ class HiCMatrix2MBDataset(Dataset):
                 f"leave_out_chromosomes={self.leave_out_chromosomes}, "
                 f"window_size={self.window_size}, "
                 f"resolution={self.resolution})")
+

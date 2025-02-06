@@ -1,5 +1,9 @@
+import numpy as np
 import torch
 import torch.nn as nn
+from torch import nn
+from torch.utils.checkpoint import checkpoint
+
 
 class OrcaResidualBlock(nn.Module):
     """A single residual block with dilated convolutions"""
@@ -170,10 +174,6 @@ class OrcaDecoder_1m(nn.Module):
         cur = self.final(cur)
         return 0.5 * (cur + cur.transpose(2, 3))
     
-import torch
-from torch import nn
-from torch.utils.checkpoint import checkpoint
-import numpy as np
 
 class ConvBlock(nn.Module):
     """Base convolutional block with optional pooling and channel adjustment"""

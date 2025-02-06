@@ -17,7 +17,7 @@ dataset:
     quantitative_atac: true
     sampling_step: 100
     mask_ratio: 0.0
-
+    drop_zero_atpm: true
 training:
   save_ckpt_freq: 1
   epochs: 100

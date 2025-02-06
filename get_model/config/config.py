@@ -199,6 +199,7 @@ class RegionMotifDatasetConfig:
     leave_out_chromosomes: str | None = None
     leave_out_celltypes: str | None = None
     mask_ratio: float = 0.0
+    drop_zero_atpm: bool = True
     hic_path: str | None = None
     hic_resolution: int = 5000
     hic_method: str = "oe"

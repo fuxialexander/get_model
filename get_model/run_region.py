@@ -46,7 +46,7 @@ class RegionDataModule(L.LightningDataModule):
 
     def build_inference_dataset(self, is_train=False, gene_list=None, gencode_obj=None):
         if gencode_obj is None:
-            gencode_obj = get_gencode_obj(self.cfg.assembly, self.cfg.machine.data_path)
+            gencode_obj = get_gencode_obj(self.cfg.assembly)
 
         return InferenceRegionDataset(
             **self.cfg.dataset,
@@ -427,8 +427,7 @@ class RegionZarrDataModule(RegionDataModule):
 
     def build_inference_dataset(self, is_train=False, gene_list=None, gencode_obj=None):
         if gencode_obj is None:
-            gencode_obj = get_gencode_obj(self.cfg.assembly, self.cfg.machine.data_path)
-        print(gencode_obj)
+            gencode_obj = get_gencode_obj(self.cfg.assembly)
         return InferenceRegionMotifDataset(
             **self.cfg.dataset,
             assembly=self.cfg.assembly,

@@ -650,7 +650,7 @@ class GETDataModule(L.LightningDataModule):
             if sequence_obj is not None
             else get_sequence_obj(config.genome_seq_zarr)
         )
-        gencode_obj = get_gencode_obj(config.genome_seq_zarr, root)
+        gencode_obj = get_gencode_obj(config.genome_seq_zarr)
 
         return config, sequence_obj, gencode_obj
 
