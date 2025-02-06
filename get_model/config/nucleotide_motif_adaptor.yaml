@@ -18,7 +18,7 @@ dataset:
 
 training:
   save_ckpt_freq: 1
-  epochs: 200
+  epochs: 300
   warmup_epochs: 0
   accumulate_grad_batches: 1
   clip_grad: null

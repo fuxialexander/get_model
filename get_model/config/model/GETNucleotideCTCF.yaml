@@ -1,0 +1,25 @@
+model:
+  _target_: get_model.model.model.GETNucleotideCTCF
+  cfg:
+    motif_scanner:
+      num_motif: 282
+      include_reverse_complement: false
+      bidirectional_except_ctcf: false
+      motif_prior: false
+      learnable: true
+      has_bias: true
+    loss:
+      components:
+        ctcf_count:
+          _target_: torch.nn.MSELoss
+          reduction: "mean"
+        ctcf_profile:
+          _target_: torch.nn.MSELoss
+          reduction: "mean"
+      weights:
+        ctcf_count: 1
+        ctcf_profile: 1
+    metrics:
+      components:
+        ctcf_count: ["pearson", "spearman", "r2"]
+        ctcf_profile: ["pearson", "spearman", "r2"]

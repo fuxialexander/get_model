@@ -1745,6 +1745,70 @@ class GETNucleotideMotifAdaptorV3(BaseGETModel):
             'sequence': torch.randint(0, 4, (B, L, 4)).float(),
         }
 
+@dataclass
+class GETNucleotideCTCFModelConfig(BaseGETModelConfig):
+    motif_scanner: MotifScannerConfig = field(
+        default_factory=MotifScannerConfig) 
+    
+
+class GETNucleotideCTCF(BaseGETModel):
+    def __init__(self, cfg: GETNucleotideCTCFModelConfig):
+        super().__init__(cfg)
+        self.motif_scanner = MotifScanner(cfg.motif_scanner)
+        self.motif_conv_blocks = nn.ModuleList([
+            nn.Conv1d(cfg.motif_scanner.num_motif, 16, 3, padding=1),
+            ConvBlock(16, 16),
+            ConvBlock(16, 16),
+        ])
+        self.atac_conv_blocks = nn.ModuleList([
+            nn.Conv1d(1, 16, 3, padding=1),
+            ConvBlock(16, 16),
+            ConvBlock(16, 16),
+        ])
+        self.fuse_conv = nn.ModuleList([
+            ConvBlock(32, 32),
+            ConvBlock(32, 32),
+        ])
+        self.ctcf_profile_head = nn.Conv1d(32, 1, 3)
+        self.ctcf_count_head = nn.Linear(32, 1)
+
+        self.apply(self._init_weights)
+
+    def get_input(self, batch):
+        return {'sequence': batch['sequence'], 'atac': batch['atac']}
+    
+    def forward(self, sequence, atac):
+        seq_emb = self.motif_scanner(sequence)
+        for conv in self.motif_conv_blocks:
+            seq_emb = conv(seq_emb)
+        for conv in self.atac_conv_blocks:
+            atac = conv(atac)
+        #    atac is B, 16, L
+        #    seq_emb is B, 16, L
+        x = torch.cat([seq_emb, atac], dim=1)
+        # after concat, x is B, 32, L
+        for conv in self.fuse_conv:
+            x = conv(x)
+        x_count = x.mean(dim=2)
+        x_count = self.ctcf_count_head(x_count) # B, 32, 1 -> B, 1
+        x_profile = self.ctcf_profile_head(x) # B, 32, L -> B, 1, L
+        x_count = F.relu(x_count)
+        x_profile = F.relu(x_profile)
+        return x_count, x_profile
+    
+    def before_loss(self, output, batch):
+        obs = {'ctcf_count': batch['ctcf_count'], 'ctcf_profile': batch['ctcf_profile']}
+        pred = {'ctcf_count': output[0], 'ctcf_profile': output[1]}
+        return pred, obs
+    
+    def generate_dummy_data(self):
+        B, L = 2, 2048
+        return {
+            'sequence': torch.randint(0, 4, (B, L, 4)).float(),
+            'atac': torch.randint(0, 4, (B, L, 4)).float(),
+        }
+    
+
 
 @dataclass
 class GETNucleotideMotifAdaptor(BaseGETModelConfig):

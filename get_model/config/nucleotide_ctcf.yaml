@@ -1,0 +1,48 @@
+defaults:
+    - base_nucleotide_ctcf_config
+    - model/GETNucleotideCTCF
+    - finetune/lightning@finetune
+    - machine/pc_adaptor
+    - _self_
+  
+  assembly: "hg38"
+  
+  dataset:
+      curated_zarr: ${machine.data_path}/hg38_sequence_atac_ctcf_curated.zarr
+      transform: null
+      sequence_length: 2048
+      leave_out_chromosomes: 'chr10,chr15'
+  
+  
+  training:
+    save_ckpt_freq: 1
+    epochs: 50
+    warmup_epochs: 0
+    accumulate_grad_batches: 1
+    clip_grad: null
+    use_fp16: true
+  
+  optimizer:
+    lr: 0.001
+    min_lr: 0.0001
+    weight_decay: 0.001
+    opt: "adamw"
+    opt_eps: 1e-8
+    opt_betas: [0.9, 0.999]
+  
+  run:
+    project_name: "GETNucleotideCTCF"
+    run_name: "test"
+    use_wandb: true
+  
+  
+  finetune:
+    pretrain_checkpoint: false
+    strict: true
+    use_lora: false
+    checkpoint: null
+    patterns_to_freeze: []
+  
+  eval_tss: true
+  log_image: true
+  

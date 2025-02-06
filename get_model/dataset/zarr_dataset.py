@@ -4397,6 +4397,61 @@ class CuratedSequenceMotifDataset(Dataset):
         return f"CuratedSequenceMotifDataset(curated_zarr={self.curated_zarr}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes})"
 
 
+class CuratedSequenceATACCTCFDataset(Dataset):
+    def __init__(self, curated_zarr: str, transform=None, is_train=True, sequence_length=512, leave_out_chromosomes: Optional[str] = None):
+        self.curated_zarr = curated_zarr
+        self.transform = transform
+        self.is_train = is_train
+        self.sequence_length = sequence_length
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.zarr_store = zarr.open(self.curated_zarr, mode='r')
+        self.chromosomes = list(self.zarr_store['sequence'].keys())
+
+        self.setup()
+
+    def setup(self):
+        input_chromosomes = _chromosome_splitter(
+            self.chromosomes, self.leave_out_chromosomes, self.is_train
+        )
+
+        self.chrom_indices = []
+        self.sample_size = 0
+        for chrom in input_chromosomes:
+            sequence_shape = self.zarr_store['sequence'][chrom].shape
+            
+            # Check if the sequence length matches the config
+            if sequence_shape[1] != self.sequence_length:
+                raise ValueError(f"Sequence length in data ({sequence_shape[1]}) does not match the configured sequence length ({self.sequence_length})")
+            
+            num_samples = sequence_shape[0]
+            self.chrom_indices.append((chrom, self.sample_size, self.sample_size + num_samples))
+            self.sample_size += num_samples
+
+    def __len__(self):
+        return self.sample_size
+
+    def __getitem__(self, index):
+        chrom, start_idx = self._get_chrom_and_index(index)
+        
+        sequence = self.zarr_store['sequence'][chrom][index - start_idx]
+        atac = self.zarr_store['atac'][chrom][index - start_idx]
+        ctcf = self.zarr_store['ctcf'][chrom][index - start_idx]
+
+        if self.transform:
+            return self.transform({"sequence": sequence, "atac": atac, "ctcf": ctcf})
+        return {"sequence": sequence.astype(np.float16), "atac": atac.astype(np.float16), "ctcf": ctcf.astype(np.float16)}
+
+    def _get_chrom_and_index(self, index):
+        for chrom, start, end in self.chrom_indices:
+            if start <= index < end:
+                return chrom, start
+        raise IndexError("Index out of range")
+
+    def __repr__(self):
+        return f"CuratedSequenceMotifDataset(curated_zarr={self.curated_zarr}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes})"
+
+
+
 class CuratedPeakMotifHiCDataset(Dataset):
     """Dataset for peak-level motif and HiC data."""
     

@@ -219,6 +219,17 @@ class NucleotideMotifDatasetConfig:
 
 
 @dataclass
+class NucleotideCTCFDatasetConfig:
+    """
+    Configuration for the nucleotide CTCF dataset.
+    """
+    curated_zarr: str | None = None
+    transform: Optional[Any] = None
+    sequence_length: int = 2048
+    leave_out_chromosomes: str | None = None
+
+
+@dataclass
 class OptimizerConfig:
     """
     Configuration for the optimizer.
@@ -518,6 +529,27 @@ class NucleotideMotifAdaptorConfig:
     task: TaskConfig = field(default_factory=TaskConfig)
 
 
+@dataclass
+class NucleotideCTCFConfig:
+    """
+    Configuration for nucleotide CTCF.
+    """
+    run: RunConfig = field(default_factory=RunConfig)
+    stage: str = "fit"
+    assembly: str = "hg38"
+    eval_tss: bool = False
+    log_image: bool = False
+    model: Any = MISSING
+    machine: MachineConfig = field(default_factory=MachineConfig)
+    dataset: NucleotideCTCFDatasetConfig = field(default_factory=NucleotideCTCFDatasetConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
+    task: TaskConfig = field(default_factory=TaskConfig)
+
+
+
+
 cs = ConfigStore.instance()
 cs.store(name="base_config", node=Config)
 
@@ -535,3 +567,6 @@ csz.store(name="base_region_zarr_config", node=RegionZarrConfig)
 
 csn = ConfigStore.instance()
 csn.store(name="base_nucleotide_motif_adaptor_config", node=NucleotideMotifAdaptorConfig)
+
+csnctcf = ConfigStore.instance()
+csnctcf.store(name="base_nucleotide_ctcf_config", node=NucleotideCTCFConfig)
