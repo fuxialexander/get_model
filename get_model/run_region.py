@@ -1,18 +1,19 @@
+import gc
 import logging
 from functools import partial
 
 import lightning as L
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
 import torch.utils.data
 import wandb
-import zarr
 from hydra.utils import instantiate
 from matplotlib import pyplot as plt
 from minlora import LoRAParametrization
 from minlora.model import add_lora_by_name
-from omegaconf import MISSING, DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from get_model.config.config import *
 from get_model.dataset.zarr_dataset import (
@@ -24,7 +25,7 @@ from get_model.dataset.zarr_dataset import (
 )
 from get_model.model.model import *
 from get_model.model.modules import *
-from get_model.run import LitModel, get_insulation_overlap, run_shared
+from get_model.run import LitModel, run_shared
 from get_model.utils import (
     extract_state_dict,
     load_checkpoint,
@@ -46,7 +47,7 @@ class RegionDataModule(L.LightningDataModule):
 
     def build_inference_dataset(self, is_train=False, gene_list=None, gencode_obj=None):
         if gencode_obj is None:
-            gencode_obj = get_gencode_obj(self.cfg.assembly)
+            gencode_obj = get_gencode_obj(self.cfg.assembly, self.cfg.machine.data_path)
 
         return InferenceRegionDataset(
             **self.cfg.dataset,
@@ -82,6 +83,7 @@ class RegionDataModule(L.LightningDataModule):
             num_workers=self.cfg.machine.num_workers,
             drop_last=True,
             shuffle=True,
+            persistent_workers=True,
         )
 
     def val_dataloader(self):
@@ -90,6 +92,7 @@ class RegionDataModule(L.LightningDataModule):
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
             drop_last=True,
+            persistent_workers=True,
         )
 
     def test_dataloader(self):
@@ -98,6 +101,7 @@ class RegionDataModule(L.LightningDataModule):
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
             drop_last=True,
+            persistent_workers=True,
         )
 
     def predict_dataloader(self):
@@ -106,6 +110,7 @@ class RegionDataModule(L.LightningDataModule):
             batch_size=self.cfg.machine.batch_size,
             num_workers=self.cfg.machine.num_workers,
             drop_last=False,
+            persistent_workers=True,
         )
 
 
@@ -115,7 +120,7 @@ class RegionLitModel(LitModel):
 
     def validation_step(self, batch, batch_idx):
         loss, pred, obs = self._shared_step(batch, batch_idx, stage="val")
-        # print(pred['exp'].detach().cpu().numpy().flatten().max(),
+        # logging.debug(pred['exp'].detach().cpu().numpy().flatten().max(),
         #       obs['exp'].detach().cpu().numpy().flatten().max())
 
         if self.cfg.eval_tss and "exp" in pred:
@@ -138,16 +143,16 @@ class RegionLitModel(LitModel):
             if obs["hic"].flatten().shape[0] > 1000:
                 try:
                     idx = np.random.choice(
-                    obs["hic"].flatten().shape[0], 1000, replace=False
+                        obs["hic"].flatten().shape[0], 1000, replace=False
                     )
                     obs["hic"] = obs["hic"].flatten()[idx]
                     pred["hic"] = pred["hic"].flatten()[idx]
                 except Exception as e:
-                    print(obs["hic"].shape)
-                    print(pred["hic"].shape)
+                    logging.debug(obs["hic"].shape)
+                    logging.debug(pred["hic"].shape)
             else:
-                obs['hic'] = torch.randn(1000).to(obs['hic'].device)
-                pred['hic'] = torch.randn(1000).to(pred['hic'].device)
+                obs["hic"] = torch.randn(1000).to(obs["hic"].device)
+                pred["hic"] = torch.randn(1000).to(pred["hic"].device)
         metrics = self.metrics(pred, obs)
         if batch_idx == 0 and self.cfg.log_image:
             # log one example as scatter plot
@@ -215,6 +220,7 @@ class RegionLitModel(LitModel):
                 mode="a",
                 header=False,
             )
+            return result_df
         elif self.cfg.task.test_mode == "perturb":
             # TODO: need to figure out if batching is working
             preds = self.perturb_step(batch, batch_idx)
@@ -259,68 +265,43 @@ class RegionLitModel(LitModel):
                 mode="a",
                 header=False,
             )
+            return results_df
             # except Exception as    e:
-            # print(e)
+            # logging.debug(e)
 
         elif self.cfg.task.test_mode == "interpret":
-            focus = []
-            # for i in range(len(batch["gene_name"])):
-            #     goi_idx = batch["all_tss_peak"][i].cpu().numpy()
-            #     goi_idx = goi_idx[goi_idx > 0]
-            #     focus.append(goi_idx)
-            focus = 100
-            torch.set_grad_enabled(True)
-            preds, obs, jacobians, embeddings = self.interpret_step(
-                batch, batch_idx, layer_names=self.cfg.task.layer_names, focus=focus
-            )
-            # pred = np.array([pred['exp'][i][:, batch['strand'][i].cpu().numpy(
-            # )][batch['all_tss_peak'][i].cpu().numpy()].mean() for i in range(len(batch['gene_name']))])
-            # obs = np.array([obs['exp'][i][:, batch['strand'][i].cpu().numpy(
-            # )][batch['all_tss_peak'][i].cpu().numpy()].mean() for i in range(len(batch['gene_name']))])
-            gene_names = recursive_numpy(recursive_detach(batch["gene_name"]))
-            for i, gene_name in enumerate(gene_names):
-                if len(gene_name) < 100:
-                    gene_names[i] = gene_name + " " * (100 - len(gene_name))
-            chromosomes = recursive_numpy(recursive_detach(batch["chromosome"]))
-            for i, chromosome in enumerate(chromosomes):
-                if len(chromosome) < 30:
-                    chromosomes[i] = chromosome + " " * (30 - len(chromosome))
-
-            result = {
-                "preds": preds,
-                "obs": obs,
-                "jacobians": jacobians,
-                "input": embeddings["input"]["region_motif"],
-                "chromosome": chromosomes,
-                "peak_coord": recursive_numpy(recursive_detach(batch["peak_coord"])),
-                "strand": recursive_numpy(recursive_detach(batch["strand"])),
-                "focus": recursive_numpy(recursive_detach(batch["all_tss_peak"])),
-                "avaliable_genes": gene_names,
-            }
-            self.accumulated_results.append(result)
-
-        elif self.cfg.task.test_mode == "interpret_captum":
-            tss_peak = batch["tss_peak"][0].cpu().numpy()
-
-            new_peak_start_idx, new_peak_end_idx, new_tss_peak = get_insulation_overlap(
-                batch, self.dm.dataset_predict.zarr_dataset.datapool.insulation
-            )
-            for shift in np.random.randint(-10, 10, 5):
-                if (
-                    new_peak_start_idx + shift < 0
-                    or new_peak_end_idx + shift >= batch["region_motif"][0].shape[0]
-                ):
-                    continue
-                # assume focus is the center peaks in the input sample
-                torch.set_grad_enabled(True)
-                self.interpret_captum_step(
-                    batch,
-                    batch_idx,
-                    focus=new_tss_peak,
-                    start=new_peak_start_idx,
-                    end=new_peak_end_idx,
-                    shift=shift,
+            with torch.enable_grad():
+                focus = 100  # Fixed focus point
+                preds, obs, jacobians, embeddings = self.interpret_step(
+                    batch, batch_idx, layer_names=self.cfg.task.layer_names, focus=focus
                 )
+                
+                # Create padded arrays and reshape to match other dimensions
+                gene_names = np.array([
+                    name.ljust(100) if len(name) < 100 else name[:100] 
+                    for name in batch["gene_name"]
+                ], dtype='U100')
+                gene_names = gene_names.reshape(-1)  # Flatten from (1000, 8) to (8000,)
+                
+                chromosomes = np.array([
+                    chrom.ljust(30) if len(chrom) < 30 else chrom[:30]
+                    for chrom in batch["chromosome"]
+                ], dtype='U30')
+                chromosomes = chromosomes.reshape(-1)  # Flatten from (1000, 8) to (8000,)
+
+                result = {
+                    "preds": preds,
+                    "obs": obs,
+                    "jacobians": jacobians,
+                    "input": embeddings["input"]["region_motif"],
+                    "chromosome": chromosomes,
+                    "peak_coord": recursive_numpy(recursive_detach(batch["peak_coord"])),
+                    "strand": recursive_numpy(recursive_detach(batch["strand"])),
+                    "focus": recursive_numpy(recursive_detach(batch["all_tss_peak"])),
+                    "available_genes": gene_names,
+                }
+                self.accumulated_results.append(result)
+                return
 
     def get_model(self):
         model = instantiate(self.cfg.model)
@@ -411,7 +392,7 @@ class RegionLitModel(LitModel):
         model.freeze_layers(
             patterns_to_freeze=self.cfg.finetune.patterns_to_freeze, invert_match=False
         )
-        print("Model = %s" % str(model))
+        logging.debug("Model = %s" % str(model))
         return model
 
     def on_validation_epoch_end(self):
@@ -428,6 +409,7 @@ class RegionZarrDataModule(RegionDataModule):
     def build_inference_dataset(self, is_train=False, gene_list=None, gencode_obj=None):
         if gencode_obj is None:
             gencode_obj = get_gencode_obj(self.cfg.assembly)
+        logging.debug(gencode_obj)
         return InferenceRegionMotifDataset(
             **self.cfg.dataset,
             assembly=self.cfg.assembly,
@@ -439,7 +421,7 @@ class RegionZarrDataModule(RegionDataModule):
 
 def run(cfg: DictConfig):
     model = RegionLitModel(cfg)
-    print(OmegaConf.to_yaml(cfg))
+    logging.debug(OmegaConf.to_yaml(cfg))
     dm = RegionDataModule(cfg)
     model.dm = dm
 
@@ -448,7 +430,7 @@ def run(cfg: DictConfig):
 
 def run_zarr(cfg: DictConfig):
     model = RegionLitModel(cfg)
-    print(OmegaConf.to_yaml(cfg))
+    logging.debug(OmegaConf.to_yaml(cfg))
     dm = RegionZarrDataModule(cfg)
     model.dm = dm
 

@@ -14,7 +14,7 @@ from gcell._settings import get_setting
 from gcell.rna.gencode import Gencode
 
 try:
-    from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO
+    from caesar.io.zarr_io import CelltypeDenseZarrIO, DenseZarrIO, SequenceDenseZarrIO
 except ImportError:
     pass
 from pyranges import PyRanges as pr
@@ -205,7 +205,7 @@ def get_gencode_obj(genome_seq_zarr: dict | str):
     # TODO: make this more flexible
     version_mapping = {
         'hg38': 44,
-        'mm10': 'm36',
+        'mm10': 'M36',
     }
     if isinstance(genome_seq_zarr, dict):
         gencode_obj = {}
@@ -449,12 +449,12 @@ class ZarrDataPool(object):
                     }
                 )
 
-        # remove redundant celltype instances, keep only one depth and one sample
-        if self.non_redundant:
-            for data_key, cdz in self.zarr_dict.items():
-                self.zarr_dict.update(
-                    {data_key: cdz.non_redundant_celltypes(self.non_redundant)}
-                )
+        # # remove redundant celltype instances, keep only one depth and one sample
+        # if self.non_redundant:
+        #     for data_key, cdz in self.zarr_dict.items():
+        #         self.zarr_dict.update(
+        #             {data_key: cdz.non_redundant_celltypes(self.non_redundant)}
+        #         )
 
         # remove samples that do not meet minimum depth threshold
         if self.filter_by_min_depth:
@@ -4788,4 +4788,132 @@ class HiCMatrix2MBDataset(Dataset):
                 f"leave_out_chromosomes={self.leave_out_chromosomes}, "
                 f"window_size={self.window_size}, "
                 f"resolution={self.resolution})")
+
+
+class SequenceTFDataset(Dataset):
+    def __init__(self, sequence_zarr: str, cdz: str, transform=None, is_train=True, sequence_length=2048, leave_out_chromosomes: str | None = None):
+        self.sequence_dataset = SequenceDenseZarrIO(sequence_zarr, dtype="int8", mode="r")
+        # self.sequence_dataset.load_to_memory_dense()
+        self.cdz = CelltypeDenseZarrIO(cdz, mode='r')
+        from pyranges import PyRanges as pr
+        peak_counts = {id: self.cdz.get_peak_counts(id, 'cluster_peaks') for id in self.cdz.ids[0:2]}
+        for id, peak_count in peak_counts.items():
+            peak_count = peak_count.reset_index(drop=True)
+            peak_count['Length'] = peak_count['End'] - peak_count['Start']
+            peak_count['Coverage'] = peak_count['Count'] / peak_count['Length']
+            peak_counts[id] = peak_count.query('Coverage>1')
+        # Get peaks and center them
+        self.peaks = pr(pd.concat([peak_counts[id] for id in peak_counts])).merge().df.reset_index(drop=True)
+        self.peaks['center'] = (self.peaks['Start'] + self.peaks['End']) / 2
+        self.peaks['Start'] = self.peaks['center'] - sequence_length // 2
+        self.peaks['End'] = self.peaks['center'] + sequence_length // 2
+        self.chunk_size = self.cdz.chunk_size
+        # Calculate chunk info for each peak
+        self.peaks['chunk_id'] = (self.peaks['Start'] // self.chunk_size).astype(int)
+        self.peaks['start_in_chunk'] = (self.peaks['Start'] % self.chunk_size).astype(int)
+        self.peaks['end_in_chunk'] = (self.peaks['End'] % self.chunk_size).astype(int)
+        self.peaks = self.peaks.query('start_in_chunk<end_in_chunk')
+        self.common_chroms = np.intersect1d(self.sequence_dataset.chroms, self.cdz.chroms)
+        self.leave_out_chromosomes = leave_out_chromosomes
+        self.is_train = is_train
+
+        input_chromosomes = _chromosome_splitter(
+            self.common_chroms, self.leave_out_chromosomes, self.is_train
+        )
+        # Filter peaks by chromosomes
+        self.peaks = self.peaks[self.peaks['Chromosome'].isin(input_chromosomes)]
+
+        # check chromosome length self.cdz.chrom_sizes
+        filtered_peak = []
+        for chrom in input_chromosomes:
+            chr_len = self.cdz.chrom_sizes[chrom]
+            filtered_peak.append(self.peaks[self.peaks['Chromosome']==chrom].query('Start>=0').query('End<=@chr_len'))
+        self.peaks = pd.concat(filtered_peak)
+        
+        self.transform = transform
+        self.input_chromosomes = input_chromosomes
+        self.sequence_length = sequence_length
+
+        # groupby chrom and chunk_id but randomize chrom and chunk_id
+        self.peaks = self.peaks.sort_values(by=['Chromosome', 'chunk_id']).groupby(['Chromosome', 'chunk_id']).apply(lambda x: x.sample(frac=1)).reset_index(drop=True)
+
+        # Track current chunk state
+        self.current_chunk = None
+        self.current_chrom = None
+        self.current_chunk_id = None
+        
+    
+    def __len__(self):
+        if self.is_train:
+            return len(self.peaks)
+        else:
+            return len(self.peaks)
+
+    def load_chunk(self, chrom, chunk_id):
+        self.current_chrom = chrom
+        self.current_chunk_id = chunk_id
+        chunk_start = chunk_id * self.chunk_size
+        
+        # Load sequence and ATAC data for chunk
+        self.current_chunk = {
+            'sequence': self.sequence_dataset.get_track(
+                chrom,
+                chunk_start,
+                chunk_start + self.chunk_size
+            ),
+            'atac': self.cdz._load_normalized_chunk_for_all_id(chrom, chunk_id)
+        }
+        self.current_chunk_id = chunk_id
+        self.current_chrom = chrom
+
+    def __getitem__(self, index):
+        peak = self.peaks.iloc[index]
+        # Find which chunk contains this index
+        chunk_idx = peak['chunk_id']
+        # Load new chunk if needed
+        if chunk_idx != self.current_chunk_id:
+            self.load_chunk(peak['Chromosome'], chunk_idx)
+
+        # Extract sequence and ATAC data
+        start_in_chunk = int(peak['start_in_chunk'])
+        end_in_chunk = int(peak['end_in_chunk'])
+        
+        sequence = self.current_chunk['sequence'][start_in_chunk:end_in_chunk]
+        atac = {
+            key: value[start_in_chunk:end_in_chunk]
+            for key, value in self.current_chunk['atac'].items()
+        }
+        
+        if self.transform:
+            return self.transform({"sequence": sequence.astype(np.float16), "atac": atac})
+        return {"sequence": sequence.astype(np.float16), "atac": atac}
+    
+    def __repr__(self):
+        return f"SequenceTFDataset(sequence_zarr={self.sequence_dataset.path}, cdz={self.cdz.path}, transform={self.transform}, is_train={self.is_train}, sequence_length={self.sequence_length}, leave_out_chromosomes={self.leave_out_chromosomes})"
+    
+    def _process_sample(self, i):
+        sample = self[i]
+        sequence = sample['sequence']
+        atac = sample['atac']
+        atac_arr = np.stack([atac[key] for key in atac.keys()]).T
+        return i, sequence, atac_arr
+    
+    def save_zarr(self, path):
+        z = zarr.open(path, mode='w')
+        n_samples = len(self)
+        
+        # Get first sample to determine shapes
+        sample = self[0]
+        sequence_shape = sample['sequence'].shape
+        atac_shape = np.stack([sample['atac'][key] for key in sample['atac'].keys()]).T.shape
+        
+        # Create zarr arrays with chunks of 16 samples
+        z.create_dataset('sequence', shape=(n_samples, *sequence_shape), chunks=(16, *sequence_shape), dtype=np.float16)
+        z.create_dataset('atac', shape=(n_samples, *atac_shape), chunks=(16, *atac_shape), dtype=np.float32)
+        
+        # Process samples sequentially
+        for i in tqdm(range(n_samples)):
+            i, sequence, atac_arr = self._process_sample(i)
+            z['sequence'][i] = sequence
+            z['atac'][i] = atac_arr
 

@@ -1,11 +1,14 @@
+import gc
 import logging
 from functools import partial
 
 import lightning as L
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
 import torch.utils.data
+import wandb
 import zarr
 from hydra.utils import instantiate
 from matplotlib import pyplot as plt
@@ -14,20 +17,24 @@ from minlora.model import add_lora_by_name
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-import wandb
 from get_model.config.config import *
 from get_model.dataset.collate import get_perturb_collate_fn, get_rev_collate_fn
-from get_model.dataset.zarr_dataset import (
-    InferenceDataset,
-    PerturbationInferenceDataset,
-    PretrainDataset,
-    get_gencode_obj,
-    get_sequence_obj,
-)
+
+try:
+    from get_model.dataset.zarr_dataset import (
+        InferenceDataset,
+        PerturbationInferenceDataset,
+        PretrainDataset,
+        get_gencode_obj,
+        get_sequence_obj,
+    )
+except:
+    pass
 from get_model.model.model import *
 from get_model.model.modules import *
 from get_model.optim import LayerDecayValueAssigner, create_optimizer
 from get_model.utils import (
+    cosine_scheduler,
     extract_state_dict,
     load_checkpoint,
     load_state_dict,
@@ -37,7 +44,6 @@ from get_model.utils import (
     recursive_save_to_zarr,
     rename_state_dict,
     setup_trainer,
-    cosine_scheduler,
 )
 
 logging.disable(logging.WARN)
@@ -54,13 +60,13 @@ class WrapperModel(torch.nn.Module):
     def forward(self, input, strand, *args, **kwargs):
         output = self.model.forward(input)
         if isinstance(output, dict):
-            print("output is dict with keys" + str(output.keys()))
+            logging.debug("output is dict with keys" + str(output.keys()))
             return output[self.output_key][:, self.focus, strand]
         return output[:, self.focus, strand]
 
 
 def extract_peak_df(batch):
-    print(list(batch.keys()))
+    logging.debug(list(batch.keys()))
     peak_coord = batch["peak_coord"][0].cpu().numpy()
     chr_name = batch["chromosome"][0]
     df = pd.DataFrame(peak_coord, columns=["Start", "End"])
@@ -74,7 +80,7 @@ def get_insulation_overlap(batch, insulation):
     peak_df = extract_peak_df(batch)
     tss_peak = int(batch["tss_peak"][0].cpu())
     insulation = insulation[insulation["Chromosome"] == peak_df["Chromosome"].values[0]]
-    print(pr(peak_df.iloc[tss_peak : tss_peak + 1]))
+    logging.debug(pr(peak_df.iloc[tss_peak : tss_peak + 1]))
     overlap = (
         pr(peak_df.iloc[tss_peak : tss_peak + 1])
         .join(pr(insulation), suffix="_insulation")
@@ -195,7 +201,7 @@ class LitModel(L.LightningModule):
         model.freeze_layers(
             patterns_to_freeze=self.cfg.finetune.patterns_to_freeze, invert_match=False
         )
-        print("Model = %s" % str(model))
+        logging.debug("Model = %s" % str(model))
         return model
 
     def forward(self, batch):
@@ -284,12 +290,14 @@ class LitModel(L.LightningModule):
         elif self.cfg.task.test_mode == "interpret":
             # assume focus is the center peaks in the input sample
             with torch.enable_grad():
-                return self.interpret_step(
+                result = self.interpret_step(
                     batch,
                     batch_idx,
                     layer_names=self.cfg.task.layer_names,
                     focus=self.cfg.dataset.n_peaks_upper_bound // 2,
                 )
+                self.accumulated_results.append(result)
+                
         elif self.cfg.task.test_mode == "perturb_interpret":
             with torch.enable_grad():
                 return self.perturb_interpret_step(batch, batch_idx)
@@ -340,35 +348,21 @@ class LitModel(L.LightningModule):
             "embeddings_mut": embeddings_mut,
         }
 
-    def interpret_step(
-        self,
-        batch,
-        batch_idx,
-        layer_names: List[str] = None,
-        focus: int | np.ndarray = None,
-    ):
-
+    def interpret_step(self, batch, batch_idx, layer_names: List[str] = None, focus: int | np.ndarray = None):
         target_tensors = {}
         hooks = []
         input = self.model.get_input(batch)
         assert focus is not None, "Please provide a focus position for interpretation"
-        assert (
-            layer_names is not None
-        ), "Please provide a list of layer names for interpretation"
-        for layer_input_name in layer_names:
-            assert (
-                layer_input_name in self.model.get_layer_names()
-            ), f"{layer_input_name} is not valid, valid layers are: {self.model.get_layer_names()}"
-
-        # Register hooks to capture the target tensors
+        assert layer_names is not None, "Please provide a list of layer names for interpretation"
+        
+        # Register hooks to capture target tensors
         def capture_target_tensor(name):
             def hook(module, input, output):
-                # Retain the gradient of the target tensor
                 output.retain_grad()
                 target_tensors[name] = output
-
             return hook
 
+        # Setup hooks and input tensors
         if layer_names is None or len(layer_names) == 0:
             target_tensors["input"] = input
             for key, tensor in input.items():
@@ -382,173 +376,97 @@ class LitModel(L.LightningModule):
                 hook = layer.register_forward_hook(capture_target_tensor(layer_name))
                 hooks.append(hook)
 
-        # Forward pass
+        # Initial forward pass
         output = self(input)
-        pred, obs = self.model.before_loss(output, batch)
-        # Remove the hooks after the forward pass
-        # for hook in hooks:
-        #     hook.remove()
-        # Compute the jacobian of the output with respect to the target tensor
+        pred_original, obs_original = self.model.before_loss(output, batch)
+
+        # Compute jacobians for each target and strand
         jacobians = {}
-        for target_name, target in obs.items():
+        for target_name, target in obs_original.items():
             jacobians[target_name] = {}
-            for i in range(target.shape[-1]):
+            for i in range(target.shape[-1]):  # Loop over strands
+                # Fresh forward pass for each strand
+                self.zero_grad(set_to_none=True)
                 output = self(input)
                 pred, obs = self.model.before_loss(output, batch)
-                jacobians[target_name][str(i)] = {}
-                mask = torch.zeros_like(target).to(self.device)
+                
+                # Create mask for current strand
+                mask = torch.zeros_like(pred[target_name]).to(self.device)
                 if isinstance(focus, int):
                     mask[:, focus, i] = 1
                 else:
-                    assert (
-                        len(focus) == mask.shape[0]
-                    ), "The length of focus should match the number of samples in batch"
+                    assert len(focus) == mask.shape[0]
                     for j in range(mask.shape[0]):
                         mask[j, focus[j], i] = 1
+                
+                # Backward pass
                 pred[target_name].backward(mask)
+                
+                # Store gradients
+                jacobians[target_name][str(i)] = {}
                 for layer_name, layer in target_tensors.items():
                     if isinstance(layer, torch.Tensor):
-                        if layer.grad is None:
-                            continue
-                        jacobians[target_name][str(i)][layer_name] = (
-                            layer.grad.detach().cpu().numpy()
-                        )
-                        layer.grad.zero_()
+                        if layer.grad is not None:
+                            jacobians[target_name][str(i)][layer_name] = layer.grad.detach().cpu().numpy()
                     elif isinstance(layer, dict):
+                        jacobians[target_name][str(i)][layer_name] = {}
                         for layer_input_name, layer_input in layer.items():
-                            if layer_input.grad is None:
-                                continue
-                            jacobians[target_name][str(i)][layer_name] = (
-                                layer_input.grad.detach().cpu().numpy()
-                            )
-                            layer_input.grad.zero_()
-        pred = recursive_numpy(recursive_detach(pred))
-        obs = recursive_numpy(recursive_detach(obs))
-        jacobians = recursive_numpy(jacobians)
-        target_tensors = recursive_numpy(target_tensors)
+                            if layer_input.grad is not None:
+                                jacobians[target_name][str(i)][layer_name][layer_input_name] = \
+                                    layer_input.grad.detach().cpu().numpy()
+
+        # Clean up hooks
+        for hook in hooks:
+            hook.remove()
+
+        # Prepare return values
+        pred = recursive_numpy(recursive_detach(pred_original))
+        obs = recursive_numpy(recursive_detach(obs_original))
+        jacobians = recursive_numpy(jacobians, dtype=np.float16)
+        target_tensors = recursive_numpy(target_tensors, dtype=np.float16)
+        
         return pred, obs, jacobians, target_tensors
 
-    def interpret_captum_step(self, batch, batch_idx, focus, start, end, shift=0):
-        import torch
-        from captum.attr import DeepLift, InputXGradient, IntegratedGradients, Saliency
+    def _save_accumulated_results(self):
+        """Helper method to save accumulated results to zarr and clear the list"""
+        if not self.accumulated_results:
+            return
+            
+        zarr_path = f"{self.cfg.machine.output_dir}/{self.cfg.run.project_name}/{self.cfg.run.run_name}/{self.cfg.dataset.leave_out_celltypes}.zarr"
+        print(f"Saving batch of results to {zarr_path}")
 
-        if len(batch["gene_name"]) > 1:
-            raise ValueError("Only one sample is supported for interpretation")
-        gene_name = batch["gene_name"][0]
-        input_data = (
-            batch["region_motif"][0][start + shift : end + shift + 1]
-            .unsqueeze(0)
-            .cuda()
-        )
-        strand = batch["strand"][0]
-        focus = focus - shift
-
-        attribution_method = "DLI"
-        # random_background_path = self.cfg.task.random_background_path
-        random_background = np.load(
-            "/home/xf2217/Projects/get_model/test/random_input_for_k562.npy"
-        )
-        if self.cfg.dataset.quantitative_atac == False:
-            random_background[:, 282] = 1
-        random_background = torch.FloatTensor(random_background).unsqueeze(0).cuda()
-        print("random_background shape", random_background.shape)
-        print("input_data shape", input_data.shape)
-        if input_data.shape != random_background.shape:
-            # pad the input data to match the random background on second dimension
-            n_region_input = input_data.shape[1]
-            n_region_random = random_background.shape[1]
-            if n_region_input < n_region_random:
-                input_data = torch.cat(
-                    [
-                        input_data,
-                        torch.zeros(
-                            input_data.shape[0],
-                            n_region_random - n_region_input,
-                            input_data.shape[2],
-                        ).cuda(),
-                    ],
-                    dim=1,
-                )
-            elif n_region_input > n_region_random:
-                random_background = torch.cat(
-                    [
-                        random_background,
-                        torch.zeros(
-                            random_background.shape[0],
-                            n_region_input - n_region_random,
-                            random_background.shape[2],
-                        ).cuda(),
-                    ],
-                    dim=1,
-                )
-        print("input_data shape", input_data.shape)
-        print("random_background shape", random_background.shape)
-        wrapped_model = WrapperModel(self.model, focus)
-
-        if attribution_method == "DLI":
-            attrib_method = DeepLift(wrapped_model, multiply_by_inputs=True)
-        elif attribution_method == "IGI":
-            attrib_method = IntegratedGradients(wrapped_model, multiply_by_inputs=True)
-        elif attribution_method == "GI":
-            attrib_method = InputXGradient(wrapped_model)
-        elif attribution_method == "SA":
-            attrib_method = Saliency(wrapped_model)
-        else:
-            raise ValueError(f"Unsupported attribution method: {attribution_method}")
-
-        attributions = (
-            attrib_method.attribute(inputs=input_data, additional_forward_args=strand)
-            .squeeze()
-            .detach()
-            .cpu()
-            .numpy()
-        )
-        attributions = np.absolute(attributions).sum(1)
-        chromosomes = recursive_numpy(recursive_detach(batch["chromosome"]))
-        for i, chromosome in enumerate(chromosomes):
-            if len(chromosome) < 10:
-                chromosomes[i] = chromosome + " " * (10 - len(chromosome))
-        gene_names = recursive_numpy(recursive_detach(batch["gene_name"]))
-        for i, gene_name in enumerate(gene_names):
-            if len(gene_name) < 20:
-                gene_names[i] = gene_name + " " * (15 - len(gene_name))
-        # Process and save attributions as needed
-        result_df = {
-            "gene_name": gene_names,
-            "input": recursive_numpy(recursive_detach(batch["region_motif"])),
-            "attribution": attributions,
-            "peaks": recursive_numpy(recursive_detach(batch["peak_coord"])),
-            "chromosome": chromosomes,
-            "strand": recursive_numpy(recursive_detach(batch["strand"])),
-            "shift": shift,
-        }
-        zarr_path = (
-            f"{self.cfg.machine.output_dir}/{self.cfg.run.run_name}/interpret.zarr"
-        )
         from numcodecs import VLenUTF8
 
         object_codec = VLenUTF8()
         z = zarr.open(zarr_path, mode="a")
-        recursive_save_to_zarr(z, result_df, object_codec=object_codec, overwrite=True)
+
+        # Concatenate all accumulated results
+        accumulated_results = recursive_concat_numpy(self.accumulated_results)
+        
+        # Ensure gene names and chromosomes are properly formatted as string arrays
+        if 'available_genes' in accumulated_results:
+            accumulated_results['available_genes'] = np.array(accumulated_results['available_genes'], dtype='U100')
+        if 'chromosome' in accumulated_results:
+            accumulated_results['chromosome'] = np.array(accumulated_results['chromosome'], dtype='U30')
+
+        recursive_save_to_zarr(
+            z, accumulated_results, object_codec=object_codec, overwrite=False
+        )
+
+        # Clear accumulated results and force garbage collection
+        self.accumulated_results = []
+        gc.collect()
 
     def on_predict_epoch_end(self):
         if self.cfg.task.test_mode == "interpret":
-            # Save accumulated results to zarr
-            zarr_path = f"{self.cfg.machine.output_dir}/{self.cfg.run.project_name}/{self.cfg.run.run_name}/interpret.zarr"
-            print(f"Saving to {zarr_path}")
-            from numcodecs import VLenUTF8
+            # Save any remaining accumulated results
+            self._save_accumulated_results()
 
-            object_codec = VLenUTF8()
-            z = zarr.open(zarr_path, mode="a")
-
-            accumulated_results = recursive_concat_numpy(self.accumulated_results)
-            recursive_save_to_zarr(
-                z, accumulated_results, object_codec=object_codec, overwrite=True
-            )
-
-            # Clear accumulated results
-            self.accumulated_results = []
-
+    def on_predict_batch_end(self, outputs, batch, batch_idx, dataloader_idx=0):
+        if self.cfg.task.test_mode == "interpret":
+            if len(self.accumulated_results) >= 1000:
+                self._save_accumulated_results()
+            
     def configure_optimizers(self):
         if hasattr(self.model.cfg, "encoder"):
             num_layers = self.model.cfg.encoder.num_layers
@@ -559,9 +477,9 @@ class LitModel(L.LightningModule):
         )
 
         if assigner is not None:
-            print("Assigned values = %s" % str(assigner.values))
+            logging.debug("Assigned values = %s" % str(assigner.values))
         skip_weight_decay_list = self.model.no_weight_decay()
-        print("Skip weight decay list: ", skip_weight_decay_list)
+        logging.debug("Skip weight decay list: %s" % str(skip_weight_decay_list))
 
         optimizer = create_optimizer(
             self.cfg.optimizer,
@@ -587,13 +505,30 @@ class LitModel(L.LightningModule):
             start_warmup_value=self.cfg.optimizer.min_lr,
             warmup_steps=-1,
         )
+        # Suppose self.schedule is a per-step LR array of length = total training steps.
+        # We define a function that picks the LR from self.schedule by the current "step".
+        def lr_lambda(step_index):
+            # step_index will go from 0 ... (max_steps - 1)
+            # (Lightning calls scheduler.step() after each batch if interval="step")
+            # if self.schedule[step_index] is the actual LR value, we divide by initial lr
+            # because LambdaLR multiplies the optimizer’s base LR by this factor
+            return self.schedule[step_index-1] / self.cfg.optimizer.lr
 
-        # set lr scheduler to schedule
+        # Create the LambdaLR
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
-            lr_lambda=lambda step: self.schedule[step - 1] / self.cfg.optimizer.lr,
+            lr_lambda=lr_lambda,
         )
-        return [optimizer], [lr_scheduler]
+
+        # Let Lightning know: this scheduler is stepped each batch
+        scheduler_config = {
+            "scheduler": lr_scheduler,
+            "interval": "step",  # call scheduler.step() every batch
+            "frequency": 1,
+        }
+
+        return [optimizer], [scheduler_config]
+
 
     # def on_before_optimizer_step(self, optimizer):
     #     # Compute the 2-norm for each layer
@@ -650,7 +585,7 @@ class GETDataModule(L.LightningDataModule):
             if sequence_obj is not None
             else get_sequence_obj(config.genome_seq_zarr)
         )
-        gencode_obj = get_gencode_obj(config.genome_seq_zarr)
+        gencode_obj = get_gencode_obj(config.genome_seq_zarr, root)
 
         return config, sequence_obj, gencode_obj
 
@@ -800,6 +735,8 @@ def run_shared(cfg, model, dm):
         trainer.validate(model, datamodule=dm, ckpt_path=cfg.finetune.resume_ckpt)
     if cfg.stage == "predict":
         trainer.predict(model, datamodule=dm, ckpt_path=cfg.finetune.resume_ckpt)
+    # close wandb
+    wandb.finish()
     return trainer
 
 
@@ -823,7 +760,7 @@ def run_downstream(cfg: DictConfig):
     dm = GETDataModule(cfg)
     model.dm = dm
     trainer = setup_trainer(cfg)
-    print(run_ppif_task(trainer, model))
+    logging.debug(run_ppif_task(trainer, model))
 
 
 def run_ppif_task(trainer: L.Trainer, lm: LitModel, output_key="atpm"):
@@ -887,3 +824,6 @@ def run_ppif_task(trainer: L.Trainer, lm: LitModel, output_key="atpm"):
         "ppif_r2": r2,
         "ppif_slope": slope,
     }
+
+
+

@@ -955,3 +955,43 @@ plt.ylabel('Gradient Abs Max')
 plt.show()
 # %%
 # %%
+from get_model.model.model import GETRegionFinetune, GETRegionFinetuneModelConfig
+from get_model.config.config import load_config
+cfg = load_config('v2_region')
+# %%
+model = GETRegionFinetune(cfg.model.cfg)
+import torch
+# model.load_state_dict(torch.load('/home/xf2217/output/finetune_pbmc10k_multiome/training_from_finetune_lora_cd4_tcm_no_chr_split/checkpoints/best-v1.ckpt')['state_dict'])
+# %%
+X0 = model.encoder.blocks[1].attn.qkv.weight.data
+s = torch.load('/home/xf2217/output/finetune_pbmc10k_multiome/training_from_finetune_lora_cd4_tcm_no_chr_split/checkpoints/best-v1.ckpt')['state_dict']
+X = s['model.encoder.blocks.3.attn.qkv.parametrizations.weight.original']
+X = X.cpu().numpy()
+# %%
+# pca of X
+from sklearn.decomposition import PCA
+pca = PCA()
+pca.fit(X)
+pca0 = PCA()
+pca0.fit(X0)
+# %%
+import matplotlib.pyplot as plt
+import seaborn as sns
+# plot the distribution of the eigenvalues, normalize to 1, no bar
+
+sns.displot(pca.singular_values_, kde=True, stat='density', fill=True)
+sns.displot(pca0.singular_values_, kde=True, stat='density', fill=True)
+plt.xlabel('Eigenvalue')
+plt.ylabel('Count')
+plt.xlim(0, 3)
+plt.title('Distribution of Eigenvalues')
+plt.show()
+# %%
+X.shape
+# %%
+model.encoder.blocks[1].attn.proj.weight.data.shape
+# %%
+s = torch.load('/home/xf2217/output/finetune_pbmc10k_multiome/training_from_finetune_lora_cd4_tcm_no_chr_split/checkpoints/best-v1.ckpt')['state_dict']
+# %%
+.shape
+# %%
