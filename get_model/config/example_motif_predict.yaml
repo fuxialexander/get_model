@@ -1,0 +1,75 @@
+defaults:
+  - base_nucleotide_motif_predict_config
+  - model/MotifPredict@_here_
+  - finetune/lightning@finetune
+  - machine/pc_adaptor
+  - _self_
+
+assembly: "hg38"
+
+dataset:
+    sequence_zarr: /home/xf2217/get_data/hg38.zarr
+    sequence_length: 512
+    leave_out_chromosomes: 'chr10,chr11'
+    is_train: true
+    dataset_size: 40960  # Full dataset size
+    eval_dataset_size: 512  # Smaller validation set to avoid OOM during metrics
+
+model:
+  cfg:
+    motif_kernels_path: /home/xf2217/Repos/motif_chip_model/artifacts/motifs_with_rc_aligned.pt
+    kernel_length: 13  # Kernel length for CNN layers (conv1 and conv2). Frozen motif layer uses kernel length from motifs file (31)
+    hidden_dim: 96
+    sequence_length: 512
+    predict_pvalue: true
+    fimo_bin_size: 0.1
+    loss:
+      components:
+        motif:
+          _target_: torch.nn.MSELoss
+          reduction: "mean"
+        motif_pvalue:
+          _target_: get_model.model.model.PiecewiseWeightedMSELoss
+          thresholds: [1.0, 2.0]
+          weights: [10.0, 20.0]
+          reduction: "mean"
+      weights:
+        motif: 0
+        motif_pvalue: 1.0
+    metrics:
+      components:
+        motif: ["pearson", "spearman", "r2"]
+        motif_pvalue: ["pearson", "spearman", "r2"]
+
+training:
+  save_ckpt_freq: 10
+  epochs: 500
+  warmup_epochs: 5
+  accumulate_grad_batches: 1
+  clip_grad: null
+  use_fp16: true
+  log_every_n_steps: 10
+
+optimizer:
+  lr: 0.001
+  min_lr: 0.0001
+  weight_decay: 0.05
+  opt: "adamw"
+  opt_eps: 1e-8
+  opt_betas: [0.9, 0.95]
+
+run:
+  project_name: "MotifPredict"
+  run_name: "k13_raw_no_relu_d64_pval_piecewise_loss_from_scratch"
+  use_wandb: true
+
+finetune:
+  pretrain_checkpoint: false
+  strict: true
+  use_lora: false
+  checkpoint: null
+  patterns_to_freeze: []
+
+eval_tss: false
+log_image: true  # Enable image logging for heatmaps
+

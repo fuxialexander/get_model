@@ -118,6 +118,113 @@ A MSE loss on the log(x+1) of the inputs.
         return torch.mean(torch.square(log_true - log_predicted_counts))
 
 
+class WeightedMSELoss(nn.Module):
+    """
+    Weighted MSE Loss that applies higher weight to samples where target > threshold.
+    
+    Args:
+        threshold: Threshold value for applying higher weight (default: 1.0)
+        high_weight: Weight multiplier for samples above threshold (default: 10.0)
+        reduction: Reduction method ('mean' or 'sum', default: 'mean')
+    """
+    def __init__(self, threshold: float = 1.0, high_weight: float = 10.0, reduction: str = "mean"):
+        super(WeightedMSELoss, self).__init__()
+        self.threshold = threshold
+        self.high_weight = high_weight
+        self.reduction = reduction
+
+    def forward(self, pred, obs):
+        """
+        Compute weighted MSE loss.
+        
+        Args:
+            pred: Predicted values (any shape)
+            obs: Observed/target values (same shape as pred)
+            
+        Returns:
+            Weighted MSE loss
+        """
+        # Compute element-wise squared errors
+        squared_errors = (pred - obs) ** 2
+        
+        # Create weight mask: 10x weight for obs > threshold, 1x otherwise
+        weights = torch.where(obs > self.threshold, 
+                             torch.tensor(self.high_weight, device=obs.device, dtype=obs.dtype),
+                             torch.tensor(1.0, device=obs.device, dtype=obs.dtype))
+        
+        # Apply weights
+        weighted_errors = squared_errors * weights
+        
+        # Apply reduction
+        if self.reduction == "mean":
+            return weighted_errors.mean()
+        elif self.reduction == "sum":
+            return weighted_errors.sum()
+        else:
+            raise ValueError(f"Unsupported reduction: {self.reduction}")
+
+
+class PiecewiseWeightedMSELoss(nn.Module):
+    """
+    Piecewise Weighted MSE Loss with multiple thresholds and weights.
+    
+    Args:
+        thresholds: List of threshold values in ascending order (e.g., [1.0, 2.0])
+        weights: List of weight multipliers for each threshold range (e.g., [10.0, 20.0])
+                 The last weight applies to values above the last threshold.
+                 Default weight is 1.0 for values below the first threshold.
+        reduction: Reduction method ('mean' or 'sum', default: 'mean')
+    
+    Example:
+        thresholds=[1.0, 2.0], weights=[10.0, 20.0] means:
+        - obs <= 1.0: weight = 1.0
+        - 1.0 < obs <= 2.0: weight = 10.0
+        - obs > 2.0: weight = 20.0
+    """
+    def __init__(self, thresholds: list = [1.0, 2.0], weights: list = [10.0, 20.0], reduction: str = "mean"):
+        super(PiecewiseWeightedMSELoss, self).__init__()
+        if len(thresholds) != len(weights):
+            raise ValueError(f"Number of thresholds ({len(thresholds)}) must match number of weights ({len(weights)})")
+        self.thresholds = sorted(thresholds)  # Ensure ascending order
+        self.weights = weights
+        self.reduction = reduction
+
+    def forward(self, pred, obs):
+        """
+        Compute piecewise weighted MSE loss.
+        
+        Args:
+            pred: Predicted values (any shape)
+            obs: Observed/target values (same shape as pred)
+            
+        Returns:
+            Weighted MSE loss
+        """
+        # Compute element-wise squared errors
+        squared_errors = (pred - obs) ** 2
+        
+        # Initialize weights with default 1.0
+        weights = torch.ones_like(obs)
+        
+        # Apply piecewise weights (from lowest to highest threshold)
+        for i, (threshold, weight) in enumerate(zip(self.thresholds, self.weights)):
+            mask = obs > threshold
+            weights = torch.where(mask, 
+                                 torch.tensor(weight, device=obs.device, dtype=obs.dtype),
+                                 weights)
+        
+        # Apply weights
+        weighted_errors = squared_errors * weights
+        
+        # Apply reduction
+        if self.reduction == "mean":
+            return weighted_errors.mean()
+        elif self.reduction == "sum":
+            return weighted_errors.sum()
+        else:
+            raise ValueError(f"Unsupported reduction: {self.reduction}")
+
+
 @dataclass
 class LossConfig:
     components: dict = MISSING
@@ -155,8 +262,16 @@ class GETLoss(nn.Module):
         super(GETLoss, self).__init__()
         self.cfg = cfg
         if isinstance(cfg, DictConfig):
-            self.losses = {name: (
-                component, cfg.weights[f'{name}']) for name, component in cfg.components.items()}
+            # Instantiate loss components if they are DictConfigs with _target_
+            self.losses = {}
+            for name, component in cfg.components.items():
+                if isinstance(component, DictConfig) and '_target_' in component:
+                    # Instantiate the loss function from DictConfig
+                    loss_fn = instantiate(component)
+                else:
+                    # Component is already instantiated
+                    loss_fn = component
+                self.losses[name] = (loss_fn, cfg.weights[f'{name}'])
         else:
             self.losses = instantiate(cfg)
 
@@ -201,18 +316,78 @@ class RegressionMetrics(nn.Module):
     def forward(self, _pred_, _obs_):
         """Compute the metrics"""
         batch_size = _pred_[list(_pred_.keys())[0]].shape[0]
-        result = {
-            target: {
-                metric_name: metric(
-                    _pred_[target].reshape(-1, 1),
-                    _obs_[target].reshape(-1, 1))
-                for metric_name, metric in target_metrics.items()
-            }
-            for target, target_metrics in self.metrics.items()
-        }
-        # flatten the result
-        result = {f"{target}_{metric_name}": result[target][metric_name]
-                  for target in result for metric_name in result[target]}
+        result = {}
+        
+        for target, target_metrics in self.metrics.items():
+            pred_tensor = _pred_[target]  # (batch, seq_len, num_features) or (batch, ...)
+            obs_tensor = _obs_[target]
+            
+            # Flatten all values for sampling (keep on GPU)
+            pred_flat = pred_tensor.reshape(-1)
+            obs_flat = obs_tensor.reshape(-1)
+            
+            # Randomly sample 10000 values to speed up correlation computation
+            n_total = pred_flat.shape[0]
+            n_samples = min(10000, n_total)
+            
+            if n_samples < n_total:
+                # Sample indices on GPU
+                indices = torch.randperm(n_total, device=pred_tensor.device)[:n_samples]
+                pred_sampled = pred_flat[indices]
+                obs_sampled = obs_flat[indices]
+            else:
+                pred_sampled = pred_flat
+                obs_sampled = obs_flat
+            
+            for metric_name, metric in target_metrics.items():
+                if metric_name == 'pearson':
+                    # Compute Pearson correlation on GPU using PyTorch
+                    pred_mean = pred_sampled.mean()
+                    obs_mean = obs_sampled.mean()
+                    pred_centered = pred_sampled - pred_mean
+                    obs_centered = obs_sampled - obs_mean
+                    
+                    numerator = (pred_centered * obs_centered).sum()
+                    pred_std = (pred_centered ** 2).sum().sqrt()
+                    obs_std = (obs_centered ** 2).sum().sqrt()
+                    
+                    denominator = pred_std * obs_std
+                    if denominator > 1e-8:
+                        corr = numerator / denominator
+                    else:
+                        corr = torch.tensor(0.0, device=pred_tensor.device)
+                    
+                    result[f"{target}_{metric_name}"] = corr
+                    
+                elif metric_name == 'spearman':
+                    # Compute Spearman correlation on GPU using rank correlation
+                    # Rank the values
+                    pred_ranks = torch.argsort(torch.argsort(pred_sampled, dim=0), dim=0).float()
+                    obs_ranks = torch.argsort(torch.argsort(obs_sampled, dim=0), dim=0).float()
+                    
+                    # Compute Pearson correlation on ranks
+                    pred_rank_mean = pred_ranks.mean()
+                    obs_rank_mean = obs_ranks.mean()
+                    pred_rank_centered = pred_ranks - pred_rank_mean
+                    obs_rank_centered = obs_ranks - obs_rank_mean
+                    
+                    numerator = (pred_rank_centered * obs_rank_centered).sum()
+                    pred_rank_std = (pred_rank_centered ** 2).sum().sqrt()
+                    obs_rank_std = (obs_rank_centered ** 2).sum().sqrt()
+                    
+                    denominator = pred_rank_std * obs_rank_std
+                    if denominator > 1e-8:
+                        corr = numerator / denominator
+                    else:
+                        corr = torch.tensor(0.0, device=pred_tensor.device)
+                    
+                    result[f"{target}_{metric_name}"] = corr
+                else:
+                    # For other metrics (MSE, R2), use the standard accumulation
+                    result[f"{target}_{metric_name}"] = metric(
+                        pred_tensor.reshape(-1, 1),
+                        obs_tensor.reshape(-1, 1))
+        
         return result
 
 
@@ -745,6 +920,8 @@ class GETRegionFinetuneATACModelConfig(BaseGETModelConfig):
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     head_exp: ExpressionHeadConfig = field(
         default_factory=ExpressionHeadConfig)
+    train_peaks_bed: str | None = field(default=None)  # Path to training peaks BED file for masking (optional, can use peak_split from zarr instead)
+    val_peaks_bed: str | None = field(default=None)  # Path to validation peaks BED file for masking (optional, can use peak_split from zarr instead)
 
 
 class GETRegionFinetuneATAC(BaseGETModel):
@@ -755,6 +932,76 @@ class GETRegionFinetuneATAC(BaseGETModel):
         self.head_exp = ExpressionHead(cfg.head_exp)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
         self.apply(self._init_weights)
+        
+        # Load peak sets for masking if provided (fallback if peak_split not in zarr)
+        self.train_peaks_set = None
+        self.val_peaks_set = None
+        # Only load BED files if explicitly provided (peak_split from zarr is preferred)
+        train_bed = getattr(cfg, 'train_peaks_bed', None)
+        val_bed = getattr(cfg, 'val_peaks_bed', None)
+        if train_bed is not None or val_bed is not None:
+            self._load_peak_sets(train_bed, val_bed)
+    
+    def _load_peak_sets(self, train_bed_path, val_bed_path):
+        """Load training and validation peak sets from BED files."""
+        import pandas as pd
+        from pathlib import Path
+        
+        def load_bed_file(bed_path):
+            """Load BED file, handling headers and different formats."""
+            try:
+                # Try reading without header first
+                df = pd.read_csv(bed_path, sep='\t', header=None, comment='#')
+                
+                # Check if first row looks like a header (contains non-numeric values in Start/End columns)
+                if len(df) > 0 and df.shape[1] >= 3:
+                    first_row = df.iloc[0]
+                    # Check if Start column (index 1) can be converted to int
+                    try:
+                        int(first_row.iloc[1])
+                        # If successful, no header - use the data as is
+                        df.columns = ['Chromosome', 'Start', 'End'] + [f'col_{i}' for i in range(3, df.shape[1])]
+                    except (ValueError, TypeError):
+                        # If conversion fails, first row is likely a header - skip it
+                        df = df.iloc[1:].reset_index(drop=True)
+                        df.columns = ['Chromosome', 'Start', 'End'] + [f'col_{i}' for i in range(3, df.shape[1])]
+                
+                # Create set of (chromosome, start, end) tuples
+                peak_set = set()
+                for _, row in df.iterrows():
+                    try:
+                        chrom = str(row['Chromosome']).strip()
+                        start = int(row['Start'])
+                        end = int(row['End'])
+                        peak_set.add((chrom, start, end))
+                    except (ValueError, KeyError) as e:
+                        # Skip rows that can't be parsed
+                        continue
+                
+                return peak_set
+            except Exception as e:
+                print(f"Error loading BED file {bed_path}: {e}")
+                return None
+        
+        if train_bed_path and Path(train_bed_path).exists():
+            self.train_peaks_set = load_bed_file(train_bed_path)
+            if self.train_peaks_set:
+                print(f"Loaded {len(self.train_peaks_set)} training peaks from {train_bed_path}")
+            else:
+                print(f"Warning: Failed to load training peaks from {train_bed_path}")
+        else:
+            if train_bed_path:
+                print(f"Warning: Training peaks BED file not found: {train_bed_path}")
+        
+        if val_bed_path and Path(val_bed_path).exists():
+            self.val_peaks_set = load_bed_file(val_bed_path)
+            if self.val_peaks_set:
+                print(f"Loaded {len(self.val_peaks_set)} validation peaks from {val_bed_path}")
+            else:
+                print(f"Warning: Failed to load validation peaks from {val_bed_path}")
+        else:
+            if val_bed_path:
+                print(f"Warning: Validation peaks BED file not found: {val_bed_path}")
 
     def get_input(self, batch):
         input = batch['region_motif'].clone()
@@ -775,9 +1022,113 @@ class GETRegionFinetuneATAC(BaseGETModel):
         return atpm
 
     def before_loss(self, output, batch):
-
         pred = {'atpm': output}
         obs = {'atpm': batch['region_motif'][:, :, -1].unsqueeze(-1)}
+        
+        # Fast masking using peak_split array from zarr (if available)
+        peak_split = batch.get('peak_split', None)
+        
+        if peak_split is not None:
+            # peak_split shape: (batch_size, num_regions) with values:
+            #   0 = training, 1 = validation, 2 = chr10, 3 = cluster, -1 = none
+            if torch.is_tensor(peak_split):
+                peak_split_np = peak_split.cpu().numpy()
+            else:
+                peak_split_np = peak_split
+            
+            batch_size, num_regions = peak_split_np.shape[0], peak_split_np.shape[1]
+            mask = torch.ones(batch_size, num_regions, 1, device=output.device, dtype=torch.bool)
+            
+            if self.training:
+                # During training: only include peaks with split=0 (training)
+                # Mask all others (set obs = pred)
+                for b in range(batch_size):
+                    for r in range(num_regions):
+                        if peak_split_np[b, r] != 0:  # Not training peak
+                            mask[b, r, 0] = False
+            else:
+                # During validation: only include peaks with split=1 (validation)
+                # Mask all others (set obs = pred)
+                for b in range(batch_size):
+                    for r in range(num_regions):
+                        if peak_split_np[b, r] != 1:  # Not validation peak
+                            mask[b, r, 0] = False
+            
+            # Set obs = pred for masked peaks (this makes loss zero for those peaks)
+            obs['atpm'] = torch.where(mask, obs['atpm'], pred['atpm'].detach())
+            
+            # Store the mask for use in metrics calculation
+            pred['_peak_mask'] = mask
+            obs['_peak_mask'] = mask
+        
+        # Fallback to slow coordinate-based masking if peak_split not available
+        elif self.train_peaks_set is not None or self.val_peaks_set is not None:
+            # Get peak coordinates from batch
+            peak_coords = batch.get('peak_coord', None)
+            chromosome = batch.get('chromosome', None)
+            
+            if peak_coords is not None and chromosome is not None:
+                # Convert to numpy/cpu for comparison
+                if torch.is_tensor(peak_coords):
+                    peak_coords_np = peak_coords.detach().cpu().numpy()
+                else:
+                    peak_coords_np = peak_coords
+                
+                if isinstance(chromosome, torch.Tensor):
+                    chromosome_str = str(chromosome.item()) if chromosome.numel() == 1 else str(chromosome[0].item())
+                else:
+                    chromosome_str = str(chromosome) if not isinstance(chromosome, (list, tuple)) else str(chromosome[0])
+                
+                # Create mask for peaks to exclude from loss
+                batch_size, num_regions = peak_coords_np.shape[0], peak_coords_np.shape[1]
+                mask = torch.ones(batch_size, num_regions, 1, device=output.device, dtype=torch.bool)
+                
+                # Check each peak in the batch (slow coordinate matching)
+                tolerance = 20
+                
+                for b in range(batch_size):
+                    for r in range(num_regions):
+                        start = int(peak_coords_np[b, r, 0])
+                        end = int(peak_coords_np[b, r, 1])
+                        peak_key = (chromosome_str, start, end)
+                        matched = False
+                        
+                        if self.train_peaks_set is not None:
+                            if peak_key in self.train_peaks_set:
+                                matched = True
+                            else:
+                                for train_chr, train_start, train_end in self.train_peaks_set:
+                                    if (train_chr == chromosome_str and 
+                                        abs(train_start - start) <= tolerance and 
+                                        abs(train_end - end) <= tolerance):
+                                        matched = True
+                                        break
+                        
+                        if self.training:
+                            if not matched:
+                                mask[b, r, 0] = False
+                        else:
+                            if matched:
+                                mask[b, r, 0] = False
+                            elif self.val_peaks_set is not None:
+                                val_matched = False
+                                val_peak_key = (chromosome_str, start, end)
+                                if val_peak_key in self.val_peaks_set:
+                                    val_matched = True
+                                else:
+                                    for val_chr, val_start, val_end in self.val_peaks_set:
+                                        if (val_chr == chromosome_str and 
+                                            abs(val_start - start) <= tolerance and 
+                                            abs(val_end - end) <= tolerance):
+                                            val_matched = True
+                                            break
+                                if not val_matched:
+                                    mask[b, r, 0] = False
+                
+                obs['atpm'] = torch.where(mask, obs['atpm'], pred['atpm'].detach())
+                pred['_peak_mask'] = mask
+                obs['_peak_mask'] = mask
+        
         return pred, obs
 
     def generate_dummy_data(self):

@@ -219,6 +219,21 @@ class NucleotideMotifDatasetConfig:
 
 
 @dataclass
+class SequenceMotifPredictDatasetConfig:
+    """
+    Configuration for sequence-based motif prediction dataset.
+    """
+    sequence_zarr: str = MISSING
+    sequence_length: int = 512
+    leave_out_chromosomes: str | None = None
+    is_train: bool = True
+    dataset_size: int = 40960
+    eval_dataset_size: int = 4096
+    peaks_bed: str | None = None  # Path to BED file with peaks for oversampling
+    peak_oversample_ratio: float = 3.0  # Ratio of peak samples to non-peak samples
+
+
+@dataclass
 class OptimizerConfig:
     """
     Configuration for the optimizer.
@@ -518,6 +533,25 @@ class NucleotideMotifAdaptorConfig:
     task: TaskConfig = field(default_factory=TaskConfig)
 
 
+@dataclass
+class NucleotideMotifPredictConfig:
+    """
+    Configuration for nucleotide motif prediction.
+    """
+    run: RunConfig = field(default_factory=RunConfig)
+    stage: str = "fit"
+    assembly: str = "hg38"
+    eval_tss: bool = False
+    log_image: bool = False
+    model: Any = MISSING
+    machine: MachineConfig = field(default_factory=MachineConfig)
+    dataset: SequenceMotifPredictDatasetConfig = field(default_factory=SequenceMotifPredictDatasetConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
+    task: TaskConfig = field(default_factory=TaskConfig)
+
+
 cs = ConfigStore.instance()
 cs.store(name="base_config", node=Config)
 
@@ -535,3 +569,6 @@ csz.store(name="base_region_zarr_config", node=RegionZarrConfig)
 
 csn = ConfigStore.instance()
 csn.store(name="base_nucleotide_motif_adaptor_config", node=NucleotideMotifAdaptorConfig)
+
+csnp = ConfigStore.instance()
+csnp.store(name="base_nucleotide_motif_predict_config", node=NucleotideMotifPredictConfig)

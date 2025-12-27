@@ -1,0 +1,19 @@
+model:
+  _target_: get_model.model.motif_predict.MotifPredictModel
+  cfg:
+    motif_kernels_path: MISSING  # Path to motifs_with_rc_aligned.pt
+    num_motifs: 3222  # Will be inferred from loaded kernels (actual: 3222)
+    kernel_length: 13  # Kernel length for CNN layers (conv1 and conv2). Frozen motif layer uses kernel length from motifs file (31)
+    hidden_dim: 32
+    sequence_length: 512
+    loss:
+      components:
+        motif:
+          _target_: torch.nn.MSELoss
+          reduction: "mean"
+      weights:
+        motif: 1.0
+    metrics:
+      components:
+        motif: ["pearson", "spearman", "r2"]
+
