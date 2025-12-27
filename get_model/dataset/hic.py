@@ -3,12 +3,25 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Dict, List, Optional, Tuple, Union
 import warnings
 
-import cooler
-import hicstraw
+try:
+    import cooler
+except ImportError:
+    cooler = None
+
+try:
+    import hicstraw
+except ImportError:
+    hicstraw = None
+
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from cooltools.lib.numutils import adaptive_coarsegrain
+
+try:
+    from cooltools.lib.numutils import adaptive_coarsegrain
+except ImportError:
+    adaptive_coarsegrain = None
+
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 

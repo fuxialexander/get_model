@@ -12,13 +12,32 @@ from timm.optim.adafactor import Adafactor
 from timm.optim.adahessian import Adahessian
 from timm.optim.adamp import AdamP
 from timm.optim.lookahead import Lookahead
-from timm.optim.nadam import Nadam
+
+try:
+    from timm.optim.nadam import Nadam
+except ImportError:
+    Nadam = None
 
 # from timm.optim.novograd import NovoGrad
-from timm.optim.nvnovograd import NvNovoGrad
-from timm.optim.radam import RAdam
-from timm.optim.rmsprop_tf import RMSpropTF
-from timm.optim.sgdp import SGDP
+try:
+    from timm.optim.nvnovograd import NvNovoGrad
+except ImportError:
+    NvNovoGrad = None
+
+try:
+    from timm.optim.radam import RAdam
+except ImportError:
+    RAdam = None
+
+try:
+    from timm.optim.rmsprop_tf import RMSpropTF
+except ImportError:
+    RMSpropTF = None
+
+try:
+    from timm.optim.sgdp import SGDP
+except ImportError:
+    SGDP = None
 
 import json
 
@@ -153,12 +172,18 @@ def create_optimizer(
     elif opt_lower == "adamw":
         optimizer = optim.AdamW(parameters, **opt_args)
     elif opt_lower == "nadam":
+        if Nadam is None:
+            raise ImportError("Nadam optimizer not available. Install timm with nadam support.")
         optimizer = Nadam(parameters, **opt_args)
     elif opt_lower == "radam":
+        if RAdam is None:
+            raise ImportError("RAdam optimizer not available. Install timm with radam support.")
         optimizer = RAdam(parameters, **opt_args)
     elif opt_lower == "adamp":
         optimizer = AdamP(parameters, wd_ratio=0.01, nesterov=True, **opt_args)
     elif opt_lower == "sgdp":
+        if SGDP is None:
+            raise ImportError("SGDP optimizer not available. Install timm with sgdp support.")
         optimizer = SGDP(parameters, momentum=args.momentum,
                          nesterov=True, **opt_args)
     elif opt_lower == "adadelta":
@@ -174,11 +199,15 @@ def create_optimizer(
             parameters, alpha=0.9, momentum=args.momentum, **opt_args
         )
     elif opt_lower == "rmsproptf":
+        if RMSpropTF is None:
+            raise ImportError("RMSpropTF optimizer not available. Install timm with rmsprop_tf support.")
         optimizer = RMSpropTF(parameters, alpha=0.9,
                               momentum=args.momentum, **opt_args)
     elif opt_lower == "novograd":
-        optimizer = NovoGrad(parameters, **opt_args)
+        raise NotImplementedError("NovoGrad not available")
     elif opt_lower == "nvnovograd":
+        if NvNovoGrad is None:
+            raise ImportError("NvNovoGrad optimizer not available. Install timm with nvnovograd support.")
         optimizer = NvNovoGrad(parameters, **opt_args)
     elif opt_lower == "fusedsgd":
         opt_args.pop("eps", None)
