@@ -460,3 +460,183 @@ class SequenceATACPredictDatasetFromDF(Dataset):
                 "sequence": torch.zeros(self.sequence_length, 4, dtype=torch.float32),
                 "atac": torch.zeros(self.sequence_length, dtype=torch.float32),
             }
+
+
+def create_all_dataloaders(
+    peaks_path: str,
+    sequence_zarr: str,
+    bpcells_path: Optional[str] = None,
+    celltype_id: str = "bulk",
+    train_column: str = "is_train_baseline_a",
+    val_column: str = "is_val_baseline_a",
+    interp_test_column: str = "is_test_interpolation",
+    manifold_test_column: str = "is_test_manifold",
+    batch_size: int = 32,
+    num_workers: int = 4,
+    extend_bp: int = 1024,
+    use_upsampling: bool = False,
+    normalize_factor: float = 1e8,
+    conv_size: int = 20,
+) -> Tuple[Any, Any, Any, Any, Any, Any]:
+    """
+    Create train, validation, and test dataloaders.
+
+    Creates separate datasets for:
+    - Training
+    - Validation
+    - Interpolation test (random held-out peaks)
+    - Manifold test (sequence-distant held-out peaks)
+
+    Args:
+        peaks_path: Path to annotated peaks BED
+        sequence_zarr: Path to genome zarr
+        bpcells_path: Path to BPCells store (optional, for ATAC targets)
+        celltype_id: Which celltype to use
+        train_column: Column name for training split
+        val_column: Column name for validation split
+        interp_test_column: Column name for interpolation test split
+        manifold_test_column: Column name for manifold test split
+        batch_size: Batch size for dataloaders
+        num_workers: Number of workers for data loading
+        extend_bp: Base pairs to extend from center
+        use_upsampling: If True, apply signal quantile-based upsampling
+
+    Returns:
+        Tuple of (train_loader, val_loader, interp_test_loader, manifold_test_loader, sequence_io, atac_io)
+    """
+    from torch.utils.data import DataLoader
+    import pandas as pd
+
+    # Load peaks
+    peaks = pd.read_csv(peaks_path, sep='\t')
+    print(f"Loaded {len(peaks)} peaks from {peaks_path}")
+    print(f"Columns: {list(peaks.columns)}")
+
+    # Initialize shared IO objects
+    sequence_io = DenseZarrIO(sequence_zarr, dtype="int8", mode="r")
+    sequence_io.load_to_memory_dense()
+
+    atac_io = None
+    if bpcells_path is not None and BPCELLS_AVAILABLE:
+        atac_io = CelltypeDenseBPCellsIO(bpcells_path, mode="r")
+        atac_io = atac_io.subset([celltype_id])
+        print(f"Library size for {celltype_id}: {atac_io.libsize.get(celltype_id, normalize_factor):.2e}")
+
+    # Create filtered DataFrames for each split
+    train_peaks = peaks[peaks[train_column] == True].copy().reset_index(drop=True)
+    val_peaks = peaks[peaks[val_column] == True].copy().reset_index(drop=True)
+
+    interp_test_peaks = None
+    manifold_test_peaks = None
+
+    if interp_test_column in peaks.columns:
+        interp_test_peaks = peaks[peaks[interp_test_column] == True].copy().reset_index(drop=True)
+
+    if manifold_test_column in peaks.columns:
+        manifold_test_peaks = peaks[peaks[manifold_test_column] == True].copy().reset_index(drop=True)
+
+    print(f"\nFiltered peak counts:")
+    print(f"  Train: {len(train_peaks)}")
+    print(f"  Val: {len(val_peaks)}")
+    if interp_test_peaks is not None:
+        print(f"  Interpolation test: {len(interp_test_peaks)}")
+    if manifold_test_peaks is not None:
+        print(f"  Manifold test: {len(manifold_test_peaks)}")
+
+    # Create datasets
+    print("\nCreating training dataset...")
+    train_dataset = SequenceATACPredictDatasetFromDF(
+        train_peaks,
+        sequence_io,
+        atac_io=atac_io,
+        celltype_id=celltype_id,
+        extend_bp=extend_bp,
+        normalize_factor=normalize_factor,
+        conv_size=conv_size,
+    )
+
+    print("Creating validation dataset...")
+    val_dataset = SequenceATACPredictDatasetFromDF(
+        val_peaks,
+        sequence_io,
+        atac_io=atac_io,
+        celltype_id=celltype_id,
+        extend_bp=extend_bp,
+        normalize_factor=normalize_factor,
+        conv_size=conv_size,
+    )
+
+    interp_test_dataset = None
+    manifold_test_dataset = None
+
+    if interp_test_peaks is not None and len(interp_test_peaks) > 0:
+        print("Creating interpolation test dataset...")
+        interp_test_dataset = SequenceATACPredictDatasetFromDF(
+            interp_test_peaks,
+            sequence_io,
+            atac_io=atac_io,
+            celltype_id=celltype_id,
+            extend_bp=extend_bp,
+            normalize_factor=normalize_factor,
+            conv_size=conv_size,
+        )
+
+    if manifold_test_peaks is not None and len(manifold_test_peaks) > 0:
+        print("Creating manifold test dataset...")
+        manifold_test_dataset = SequenceATACPredictDatasetFromDF(
+            manifold_test_peaks,
+            sequence_io,
+            atac_io=atac_io,
+            celltype_id=celltype_id,
+            extend_bp=extend_bp,
+            normalize_factor=normalize_factor,
+            conv_size=conv_size,
+        )
+
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    interp_test_loader = None
+    if interp_test_dataset is not None:
+        interp_test_loader = DataLoader(
+            interp_test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+
+    manifold_test_loader = None
+    if manifold_test_dataset is not None:
+        manifold_test_loader = DataLoader(
+            manifold_test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+
+    print(f"\nDataloader sizes:")
+    print(f"  Train: {len(train_loader)} batches ({len(train_dataset)} samples)")
+    print(f"  Val: {len(val_loader)} batches ({len(val_dataset)} samples)")
+    if interp_test_loader is not None:
+        print(f"  Interp Test: {len(interp_test_loader)} batches ({len(interp_test_dataset)} samples)")
+    if manifold_test_loader is not None:
+        print(f"  Manifold Test: {len(manifold_test_loader)} batches ({len(manifold_test_dataset)} samples)")
+
+    return train_loader, val_loader, interp_test_loader, manifold_test_loader, sequence_io, atac_io

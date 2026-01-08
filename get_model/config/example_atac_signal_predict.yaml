@@ -34,6 +34,15 @@ dataset:
   use_upsampling: false
   normalize_factor: 1.0e8
   conv_size: 20
+  # Test set columns in peaks_bed (boolean columns)
+  interp_test_column: is_test_interpolation  # Random held-out peaks
+  manifold_test_column: is_test_manifold  # Sequence-distant held-out peaks
+
+# Evaluation configuration (for mutation effect / caQTL benchmarking)
+evaluation:
+  caqtl_path: null  # Path to caQTL TSV file (e.g., /path/to/caqtl_benchmark.tsv.gz)
+  extend_bp: 1024  # BP extension for variant sequences
+  center_crop: 1024  # Center region for effect calculation
 
 # Task configuration
 task:
