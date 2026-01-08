@@ -305,14 +305,19 @@ class ATACSignalLitModel(BaseLitModel):
                          on_step=False, on_epoch=True, sync_dist=True)
                 self.log('caqtl_auc_direction', caqtl_metrics['auc_direction'],
                          on_step=False, on_epoch=True, sync_dist=True)
+                self.log('caqtl_aupr_direction', caqtl_metrics['aupr_direction'],
+                         on_step=False, on_epoch=True, sync_dist=True)
                 self.log('caqtl_auc_strong', caqtl_metrics['auc_strong_effects'],
+                         on_step=False, on_epoch=True, sync_dist=True)
+                self.log('caqtl_aupr_strong', caqtl_metrics['aupr_strong_effects'],
                          on_step=False, on_epoch=True, sync_dist=True)
 
                 logging.info(
                     f"caQTL metrics - n={caqtl_metrics['n_variants']}, "
                     f"pearson_r={caqtl_metrics['pearson_r']:.4f}, "
                     f"spearman_r={caqtl_metrics['spearman_r']:.4f}, "
-                    f"auc_direction={caqtl_metrics['auc_direction']:.4f}"
+                    f"auc_direction={caqtl_metrics['auc_direction']:.4f}, "
+                    f"aupr_direction={caqtl_metrics['aupr_direction']:.4f}"
                 )
 
             except Exception as e:

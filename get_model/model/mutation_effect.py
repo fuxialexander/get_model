@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from typing import Dict, Tuple, Optional
 from scipy import stats
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 from tqdm import tqdm
 
 # Nucleotide to one-hot index mapping
@@ -302,7 +302,12 @@ class MutationEffectEvaluator:
         except ValueError:
             auc_direction = float('nan')
 
-        # Compute AUC for strong effects (|obs| > 1)
+        try:
+            aupr_direction = average_precision_score(obs_direction, pred_direction_score)
+        except ValueError:
+            aupr_direction = float('nan')
+
+        # Compute AUC and AUPR for strong effects (|obs| > 1)
         strong_mask = np.abs(obs) > 1
         if strong_mask.sum() >= 10:
             obs_strong = (obs[strong_mask] > 0).astype(int)
@@ -311,8 +316,13 @@ class MutationEffectEvaluator:
                 auc_strong = roc_auc_score(obs_strong, pred_strong)
             except ValueError:
                 auc_strong = float('nan')
+            try:
+                aupr_strong = average_precision_score(obs_strong, pred_strong)
+            except ValueError:
+                aupr_strong = float('nan')
         else:
             auc_strong = float('nan')
+            aupr_strong = float('nan')
 
         return {
             'n_variants': len(pred),
@@ -320,7 +330,9 @@ class MutationEffectEvaluator:
             'pearson_r': float(pearson_r),
             'spearman_r': float(spearman_r),
             'auc_direction': float(auc_direction),
+            'aupr_direction': float(aupr_direction),
             'auc_strong_effects': float(auc_strong),
+            'aupr_strong_effects': float(aupr_strong),
             'predicted_logfc': pred,
             'observed_logfc': obs,
         }
