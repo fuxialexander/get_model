@@ -1,0 +1,86 @@
+# Example configuration for ATAC signal prediction from DNA sequence
+#
+# This model reuses the trunk from the motif prediction model and adds
+# an ATAC signal prediction head.
+#
+# Usage:
+#   python -m get_model.main --config-name example_atac_signal_predict
+
+defaults:
+  - model: ATACSignalPredict
+
+# Model configuration overrides
+model:
+  cfg:
+    motif_kernels_path: /path/to/motifs_with_rc_aligned.pt
+    hidden_dim: 32
+    sequence_length: 2048
+    atac_hidden_dim: 128
+    atac_num_res_blocks: 8
+    # Optional: load pretrained trunk from motif prediction model
+    # pretrained_motif_model_path: /path/to/motif_predict_checkpoint.pt
+    # freeze_trunk: false
+
+# Dataset configuration
+dataset:
+  sequence_zarr: /path/to/genome.zarr
+  peaks_bed: /path/to/peaks.bed
+  bpcells_path: /path/to/bpcells  # Optional: for ATAC targets
+  celltype_id: bulk
+  sequence_length: 2048
+  extend_bp: 1024  # 1024bp on each side of peak center
+  leave_out_chromosomes: chr8  # Validation chromosome
+  is_train: true
+  use_upsampling: false
+  normalize_factor: 1.0e8
+  conv_size: 20
+
+# Task configuration
+task:
+  test_mode: train  # train, predict, or validate
+  run_name: atac_signal_predict
+
+# Optimizer configuration
+optimizer:
+  lr: 1.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+# Scheduler configuration
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  mode: min
+  patience: 5
+  factor: 0.5
+
+# Machine configuration
+machine:
+  batch_size: 32
+  val_batch_size: 16
+  num_workers: 4
+  accelerator: gpu
+  devices: 1
+  precision: 32  # or "bf16-mixed" for mixed precision
+
+# Training configuration
+training:
+  max_epochs: 50
+  gradient_clip_val: 0.5
+  log_every_n_steps: 50
+  val_check_interval: 1.0
+  accumulate_grad_batches: 1
+
+# Finetune configuration (for loading checkpoints)
+finetune:
+  checkpoint: null
+  model_key: state_dict
+  strict: false
+  use_lora: false
+  rename_config: null
+  layers_with_lora: []
+
+# Logging configuration
+wandb:
+  project: atac-signal-predict
+  name: null  # Auto-generated if null
+  tags: []

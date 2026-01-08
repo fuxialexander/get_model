@@ -1,0 +1,42 @@
+model:
+  _target_: get_model.model.atac_signal_predict.ATACSignalPredictModel
+  cfg:
+    # Trunk configuration (from MotifPredictModel)
+    motif_kernels_path: MISSING  # Path to motifs_with_rc_aligned.pt
+    num_motifs: 637  # Will be inferred from loaded kernels
+    kernel_length: 13  # Kernel length for trunk CNN layers
+    hidden_dim: 32  # Hidden dimension for trunk CNN layers
+    sequence_length: 2048  # Input sequence length
+
+    # ATAC head configuration
+    atac_hidden_dim: 128  # Hidden dimension for ATAC head
+    atac_num_res_blocks: 8  # Number of residual blocks in ATAC head
+    atac_dilations: [1, 2, 3, 5, 11, 41, 81, 167]  # Dilations for residual blocks
+    atac_kernel_size: 3  # Kernel size for ATAC residual blocks
+    atac_dropout: 0.1  # Dropout rate for ATAC head
+
+    # Multi-task configuration
+    predict_motif: false  # Set to true for multi-task learning
+    share_trunk_features: true
+
+    # Pretrained model (optional)
+    pretrained_motif_model_path: null  # Path to pretrained MotifPredictModel checkpoint
+    freeze_trunk: false  # Set to true to freeze trunk during training
+
+    # Loss configuration
+    loss:
+      components:
+        atac:
+          _target_: get_model.model.atac_losses.ShapeScaleLoss
+          shape_mode: "ce"
+          tau: 1.0
+          scale_weight: 0.2
+          eps: 1.0e-6
+          reduction: "mean"
+      weights:
+        atac: 1.0
+
+    # Metrics configuration
+    metrics:
+      components:
+        atac: ["pearson", "spearman", "r2", "mse"]
