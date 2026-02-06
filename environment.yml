@@ -168,7 +168,7 @@ dependencies:
   - networkx=3.1=pyhd8ed1ab_0
   - nspr=4.35=h27087fc_0
   - nss=3.92=h1d7d5a4_0
-  - numcodecs=0.11.0=py311hcafe171_1
+  - numcodecs>=0.15.1
   - numpy=1.26.0=py311h64a7726_0
   - openh264=2.1.1=h780b84a_0
   - openjpeg=2.5.0=hfec8fc6_2
@@ -251,7 +251,7 @@ dependencies:
   - xorg-xproto=7.0.31=h7f98852_1007
   - xz=5.2.6=h166bdaf_0
   - yaml=0.2.5=h7f98852_2
-  - zarr=2.16.1=pyhd8ed1ab_0
+  - zarr>=3
   - zfp=1.0.0=h27087fc_3
   - zlib=1.2.13=hd590300_5
   - zlib-ng=2.0.7=h0b41bf4_0

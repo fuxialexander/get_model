@@ -12,6 +12,7 @@ from get_model.dataset.io import generate_paths, get_hierachical_ctcf_pos, prepa
 from get_model.dataset.splitter import cell_splitter, chromosome_splitter
 from scipy.sparse import coo_matrix, load_npz, vstack
 import zarr
+from zarr.storage import ZipStore
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -349,7 +350,13 @@ def make_dataset(
         if use_seq:
             if not os.path.exists(paths_dict["seq_npz"]):
                 continue
-            seq_data = zarr.load(paths_dict["seq_npz"])['arr_0']
+            # Use ZipStore explicitly for zarr v3 compatibility with .zarr.zip files
+            seq_path = paths_dict["seq_npz"]
+            if seq_path.endswith('.zip'):
+                with ZipStore(seq_path, mode='r') as store:
+                    seq_data = zarr.open_array(store, path='arr_0', mode='r')[:]
+            else:
+                seq_data = zarr.load(seq_path)['arr_0']
             celltype_annot = prepare_sequence_idx(celltype_annot, num_region_per_sample)
 
         # Compute sample specific CTCF position segmentation

@@ -2,7 +2,7 @@
 import zarr
 import threading
 import random
-from numcodecs import Blosc
+# Note: Blosc import removed as it was unused
 from caesar.io.zarr_io import DenseZarrIO, CelltypeDenseZarrIO
 from tqdm import tqdm
 from torch.utils.data import Dataset
