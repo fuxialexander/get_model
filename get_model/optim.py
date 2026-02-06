@@ -5,40 +5,26 @@
 # https://github.com/facebookresearch/deit
 # https://github.com/facebookresearch/dino
 # --------------------------------------------------------'
-import torch
-from torch import optim as optim
-
-from timm.optim.adafactor import Adafactor
-from timm.optim.adahessian import Adahessian
-from timm.optim.adamp import AdamP
-from timm.optim.lookahead import Lookahead
-from timm.optim.nadam import Nadam
-
-# from timm.optim.novograd import NovoGrad
-from timm.optim.nvnovograd import NvNovoGrad
-from timm.optim.radam import RAdam
-from timm.optim.rmsprop_tf import RMSpropTF
-from timm.optim.sgdp import SGDP
-
 import json
+import logging
 
-try:
-    from apex.optimizers import FusedNovoGrad, FusedAdam, FusedLAMB, FusedSGD
+from timm.optim.lookahead import Lookahead
 
-    has_apex = True
-except ImportError:
-    has_apex = False
+from torch import optim as optim
 
 
 def get_num_layer_for_vit(var_name, num_max_layer):
     if var_name in ("cls_token", "mask_token", "pos_embed"):
         return 0
-    elif var_name.startswith("patch_embed"):
+    elif var_name.startswith("region_embed"):
         return 0
     elif var_name.startswith("rel_pos_bias"):
         return num_max_layer - 1
     elif var_name.startswith("blocks"):
         layer_id = int(var_name.split(".")[1])
+        return layer_id + 1
+    elif var_name.startswith("encoder.blocks"):
+        layer_id = int(var_name.split(".")[2])
         return layer_id + 1
     else:
         return num_max_layer - 1
@@ -95,7 +81,7 @@ def get_parameter_groups(
 
         parameter_group_vars[group_name]["params"].append(param)
         parameter_group_names[group_name]["params"].append(name)
-    print("Param groups = %s" % json.dumps(parameter_group_names, indent=2))
+    logging.debug("Param groups = %s" % json.dumps(parameter_group_names, indent=2))
     return list(parameter_group_vars.values())
 
 
@@ -122,18 +108,13 @@ def create_optimizer(
     else:
         parameters = model.parameters()
 
-    if "fused" in opt_lower:
-        assert (
-            has_apex and torch.cuda.is_available()
-        ), "APEX and CUDA required for fused optimizers"
-
     opt_args = dict(lr=args.lr, weight_decay=weight_decay)
     if hasattr(args, "opt_eps") and args.opt_eps is not None:
         opt_args["eps"] = args.opt_eps
     if hasattr(args, "opt_betas") and args.opt_betas is not None:
         opt_args["betas"] = args.opt_betas
 
-    print("optimizer settings:", opt_args)
+    logging.debug("optimizer settings:", opt_args)
 
     opt_split = opt_lower.split("_")
     opt_lower = opt_split[-1]
@@ -151,51 +132,7 @@ def create_optimizer(
         optimizer = optim.Adam(parameters, **opt_args)
     elif opt_lower == "adamw":
         optimizer = optim.AdamW(parameters, **opt_args)
-    elif opt_lower == "nadam":
-        optimizer = Nadam(parameters, **opt_args)
-    elif opt_lower == "radam":
-        optimizer = RAdam(parameters, **opt_args)
-    elif opt_lower == "adamp":
-        optimizer = AdamP(parameters, wd_ratio=0.01, nesterov=True, **opt_args)
-    elif opt_lower == "sgdp":
-        optimizer = SGDP(parameters, momentum=args.momentum, nesterov=True, **opt_args)
-    elif opt_lower == "adadelta":
-        optimizer = optim.Adadelta(parameters, **opt_args)
-    elif opt_lower == "adafactor":
-        if not args.lr:
-            opt_args["lr"] = None
-        optimizer = Adafactor(parameters, **opt_args)
-    elif opt_lower == "adahessian":
-        optimizer = Adahessian(parameters, **opt_args)
-    elif opt_lower == "rmsprop":
-        optimizer = optim.RMSprop(
-            parameters, alpha=0.9, momentum=args.momentum, **opt_args
-        )
-    elif opt_lower == "rmsproptf":
-        optimizer = RMSpropTF(parameters, alpha=0.9, momentum=args.momentum, **opt_args)
-    elif opt_lower == "novograd":
-        optimizer = NovoGrad(parameters, **opt_args)
-    elif opt_lower == "nvnovograd":
-        optimizer = NvNovoGrad(parameters, **opt_args)
-    elif opt_lower == "fusedsgd":
-        opt_args.pop("eps", None)
-        optimizer = FusedSGD(
-            parameters, momentum=args.momentum, nesterov=True, **opt_args
-        )
-    elif opt_lower == "fusedmomentum":
-        opt_args.pop("eps", None)
-        optimizer = FusedSGD(
-            parameters, momentum=args.momentum, nesterov=False, **opt_args
-        )
-    elif opt_lower == "fusedadam":
-        optimizer = FusedAdam(parameters, adam_w_mode=False, **opt_args)
-    elif opt_lower == "fusedadamw":
-        optimizer = FusedAdam(parameters, adam_w_mode=True, **opt_args)
-    elif opt_lower == "fusedlamb":
-        optimizer = FusedLAMB(parameters, **opt_args)
-    elif opt_lower == "fusednovograd":
-        opt_args.setdefault("betas", (0.95, 0.98))
-        optimizer = FusedNovoGrad(parameters, **opt_args)
+ 
     else:
         assert False and "Invalid optimizer"
         raise ValueError
