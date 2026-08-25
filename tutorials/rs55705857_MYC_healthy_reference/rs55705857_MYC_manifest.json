@@ -1,0 +1,31 @@
+{
+  "variant": "rs55705857",
+  "gene": "MYC",
+  "assembly": "hg38",
+  "coordinates": {
+    "chromosome": "chr8",
+    "start_0_based": 129633445,
+    "end_0_based_exclusive": 129633446,
+    "ref": "A",
+    "alt": "G"
+  },
+  "conditions": {
+    "healthy_OPC": {
+      "type": "legacy_healthy_cell",
+      "cell_id": "4",
+      "data_dir": "/mnt/storage/get_demo/pretrain_human_bingren_shendure_apr2023/fetal_adult",
+      "interpret_dir": "/mnt/storage/get_demo/Interpretation_all_hg38_allembed_v4_natac"
+    },
+    "healthy_oligodendrocyte": {
+      "type": "legacy_healthy_cell",
+      "cell_id": "38",
+      "data_dir": "/mnt/storage/get_demo/pretrain_human_bingren_shendure_apr2023/fetal_adult",
+      "interpret_dir": "/mnt/storage/get_demo/Interpretation_all_hg38_allembed_v4_natac"
+    }
+  },
+  "score_definitions": {
+    "raw": "(Alt motif score - Ref motif score) * MYC motif Jacobian",
+    "legacy": "sign(Alt-Ref) when abs(Alt-Ref)>10, else 0; multiplied by MYC motif Jacobian"
+  },
+  "rank_by": "legacy"
+}

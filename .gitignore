@@ -36,6 +36,8 @@ test/abc
 *png
 *bw
 *tsv
+!tutorials/rs55705857.hg38.tsv
+!tutorials/rs55705857_MYC_healthy_reference/*.tsv
 experiments
 tutorials/*.zarr
 tutorials/*.yaml
