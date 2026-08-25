@@ -1,4 +1,4 @@
-motif	motif_importance__healthy_OPC	motif_importance__healthy_oligodendrocyte	score_raw__healthy_OPC	score_raw__healthy_oligodendrocyte	score_legacy__healthy_OPC	score_legacy__healthy_oligodendrocyte
+motif	motif_importance__healthy_OPC	motif_importance__healthy_oligodendrocyte	score_raw__healthy_OPC	score_raw__healthy_oligodendrocyte	score_thresholded_2023__healthy_OPC	score_thresholded_2023__healthy_oligodendrocyte
 AHR	0.0019838473880130995	0.003056828449373189	0.0	0.0	0.0	0.0
 AIRE	0.0016473873290986317	0.0010846280459342779	0.0	0.0	0.0	0.0
 AP1/1	0.005089330743537079	0.005410688509108585	0.0	0.0	0.0	0.0

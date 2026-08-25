@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 """Reproduce rs55705857-to-MYC motif scoring across GET checkpoints.
 
-The historical analysis had two distinct stages:
+The November 2023 analysis had two distinct stages:
 
 1. Run a checkpoint in ``interpret`` mode to save MYC input Jacobians.
 2. Score each motif as its alternate-minus-reference sequence change multiplied
    by the checkpoint-specific MYC motif Jacobian.
 
 Use the ``interpret`` subcommand once per checkpoint/condition, then pass the
-resulting Zarr stores to ``score``.  The score output contains both the raw
-current score and the thresholded score used by the November 2023 glioma
-analysis.
+resulting Zarr stores to ``score``. The score output contains both the raw
+continuous score and the explicitly named ``thresholded_2023`` score used by
+the November 2023 glioma analysis.
 """
 
 from __future__ import annotations
@@ -207,12 +207,12 @@ def _motif_delta(mutation, motif) -> pd.Series:
     return delta.astype(float)
 
 
-def _legacy_threshold(delta: pd.Series) -> pd.Series:
+def _threshold_2023(delta: pd.Series) -> pd.Series:
     """Reproduce the loss/gain discretization in the 2023 glioma script."""
     return pd.Series(
         np.where(delta < -10, -1.0, np.where(delta > 10, 1.0, 0.0)),
         index=delta.index,
-        name="motif_delta_legacy",
+        name="motif_delta_thresholded_2023",
     )
 
 
@@ -249,16 +249,21 @@ def _score_hydra_condition(
             "motif_importance": importance.loc[motifs].values,
         }
     )
-    result["motif_delta_legacy"] = _legacy_threshold(
+    result["motif_delta_thresholded_2023"] = _threshold_2023(
         result.set_index("motif")["motif_delta_raw"]
     ).values
     result["score_raw"] = result["motif_delta_raw"] * result["motif_importance"]
-    result["score_legacy"] = result["motif_delta_legacy"] * result["motif_importance"]
+    result["score_thresholded_2023"] = (
+        result["motif_delta_thresholded_2023"] * result["motif_importance"]
+    )
     result["rank_abs_raw"] = (
         result["score_raw"].abs().rank(method="min", ascending=False).astype(int)
     )
-    result["rank_abs_legacy"] = (
-        result["score_legacy"].abs().rank(method="min", ascending=False).astype(int)
+    result["rank_abs_thresholded_2023"] = (
+        result["score_thresholded_2023"]
+        .abs()
+        .rank(method="min", ascending=False)
+        .astype(int)
     )
     return result
 
@@ -324,16 +329,21 @@ def _score_legacy_condition(
             "motif_importance": importance.loc[motifs].values,
         }
     )
-    result["motif_delta_legacy"] = _legacy_threshold(
+    result["motif_delta_thresholded_2023"] = _threshold_2023(
         result.set_index("motif")["motif_delta_raw"]
     ).values
     result["score_raw"] = result["motif_delta_raw"] * result["motif_importance"]
-    result["score_legacy"] = result["motif_delta_legacy"] * result["motif_importance"]
+    result["score_thresholded_2023"] = (
+        result["motif_delta_thresholded_2023"] * result["motif_importance"]
+    )
     result["rank_abs_raw"] = (
         result["score_raw"].abs().rank(method="min", ascending=False).astype(int)
     )
-    result["rank_abs_legacy"] = (
-        result["score_legacy"].abs().rank(method="min", ascending=False).astype(int)
+    result["rank_abs_thresholded_2023"] = (
+        result["score_thresholded_2023"]
+        .abs()
+        .rank(method="min", ascending=False)
+        .astype(int)
     )
     return result
 
@@ -398,8 +408,16 @@ def run_score(args: argparse.Namespace) -> Path:
     score_path = output_dir / f"{stem}_motif_scores.tsv"
     scores.to_csv(score_path, sep="\t", index=False)
 
-    rank_column = "rank_abs_legacy" if args.rank_by == "legacy" else "rank_abs_raw"
-    score_column = "score_legacy" if args.rank_by == "legacy" else "score_raw"
+    rank_column = (
+        "rank_abs_thresholded_2023"
+        if args.rank_by == "thresholded_2023"
+        else "rank_abs_raw"
+    )
+    score_column = (
+        "score_thresholded_2023"
+        if args.rank_by == "thresholded_2023"
+        else "score_raw"
+    )
     top = (
         scores.loc[scores[score_column] != 0]
         .assign(_abs_score=lambda frame: frame[score_column].abs())
@@ -422,7 +440,7 @@ def run_score(args: argparse.Namespace) -> Path:
     comparison = scores.pivot(
         index="motif",
         columns="condition",
-        values=["motif_importance", "score_raw", "score_legacy"],
+        values=["motif_importance", "score_raw", "score_thresholded_2023"],
     )
     comparison.columns = [f"{metric}__{condition}" for metric, condition in comparison]
     comparison.reset_index().to_csv(
@@ -458,7 +476,7 @@ def run_score(args: argparse.Namespace) -> Path:
         },
         "score_definitions": {
             "raw": "(Alt motif score - Ref motif score) * MYC motif Jacobian",
-            "legacy": "sign(Alt-Ref) when abs(Alt-Ref)>10, else 0; multiplied by MYC motif Jacobian",
+            "thresholded_2023": "sign(Alt-Ref) when abs(Alt-Ref)>10, else 0; multiplied by MYC motif Jacobian",
         },
         "rank_by": args.rank_by,
     }
@@ -530,7 +548,11 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument("--motif-pickle", type=Path)
     score.add_argument("--output-dir", type=Path, required=True)
     score.add_argument("--top-n", type=int, default=20)
-    score.add_argument("--rank-by", choices=("legacy", "raw"), default="legacy")
+    score.add_argument(
+        "--rank-by",
+        choices=("thresholded_2023", "raw"),
+        default="thresholded_2023",
+    )
     score.add_argument("--highlight-regex", default=r"MYC|OCT|POU")
     score.set_defaults(func=run_score)
     return parser

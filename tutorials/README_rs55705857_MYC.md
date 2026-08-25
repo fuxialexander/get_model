@@ -9,7 +9,7 @@ scoring. `CellMutCollection` does not consume a checkpoint directly: a GET
 checkpoint must first generate a tumor-cell interpretation Zarr containing the
 MYC input Jacobian.
 
-The historical source is still available in Git commit
+The November 2023 source is still available in Git commit
 `5607bf583fa89421701f7360effcf9d20db8cd28` as `analysis/glioma_orig.py`; it was
 removed from the working tree by commit `04101a5d2a3926842ea65d7b2ba02ea0085e4fa9`.
 
@@ -45,10 +45,10 @@ python tutorials/reproduce_rs55705857_myc.py score \
   --output-dir /path/to/rs55705857_results/scores
 ```
 
-The full output retains both the continuous score and the historical November
-2023 score. The continuous score is `(Alt - Ref motif score) * MYC motif
-Jacobian`. The historical score first maps motif changes below -10 to -1,
-above 10 to +1, and all other changes to zero.
+The full output retains both the continuous score and the explicitly labeled
+`thresholded_2023` score. The continuous score is `(Alt - Ref motif score) *
+MYC motif Jacobian`. The `thresholded_2023` calculation first maps motif changes
+below -10 to -1, above 10 to +1, and all other changes to zero.
 
 The checked healthy reference results in
 `rs55705857_MYC_healthy_reference/` were generated from saved legacy stores:

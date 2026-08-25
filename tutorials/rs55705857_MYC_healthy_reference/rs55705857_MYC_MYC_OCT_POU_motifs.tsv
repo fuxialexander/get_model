@@ -1,4 +1,4 @@
-variant	gene	condition	motif	motif_delta_raw	motif_importance	motif_delta_legacy	score_raw	score_legacy	rank_abs_raw	rank_abs_legacy
+variant	gene	condition	motif	motif_delta_raw	motif_importance	motif_delta_thresholded_2023	score_raw	score_thresholded_2023	rank_abs_raw	rank_abs_thresholded_2023
 rs55705857	MYC	healthy_OPC	POU/3	-15.016703084963694	0.0004955339074392596	-1.0	-0.007441285556547244	-0.0004955339074392596	1	1
 rs55705857	MYC	healthy_OPC	OCT4+SOX2	0.0	0.003378847289092853	0.0	0.0	0.0	3	2
 rs55705857	MYC	healthy_OPC	POU/1	-7.379063690573654	0.0005939871084415049	0.0	-0.004383068704569545	0.0	2	2

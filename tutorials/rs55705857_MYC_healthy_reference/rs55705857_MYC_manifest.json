@@ -25,7 +25,7 @@
   },
   "score_definitions": {
     "raw": "(Alt motif score - Ref motif score) * MYC motif Jacobian",
-    "legacy": "sign(Alt-Ref) when abs(Alt-Ref)>10, else 0; multiplied by MYC motif Jacobian"
+    "thresholded_2023": "sign(Alt-Ref) when abs(Alt-Ref)>10, else 0; multiplied by MYC motif Jacobian"
   },
-  "rank_by": "legacy"
+  "rank_by": "thresholded_2023"
 }
