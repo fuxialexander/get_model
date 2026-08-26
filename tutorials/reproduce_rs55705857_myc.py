@@ -202,7 +202,14 @@ def _load_variant(args: argparse.Namespace, genome):
 
 def _motif_delta(mutation, motif) -> pd.Series:
     motif_diff = mutation.get_motif_diff(motif)
-    delta = motif_diff["Alt"].iloc[0] - motif_diff["Ref"].iloc[0]
+    # scan_motif's sparse output uses NaN (not 0) as the fill value for
+    # clusters with zero hits. A cluster with no match in Alt or Ref is
+    # biologically a real 0, not missing data -- densify + fillna(0)
+    # before subtracting, otherwise any motif fully created/destroyed by
+    # the variant (e.g. POU/3 here) incorrectly comes out as NaN.
+    alt = motif_diff["Alt"].sparse.to_dense().fillna(0)
+    ref = motif_diff["Ref"].sparse.to_dense().fillna(0)
+    delta = alt.iloc[0] - ref.iloc[0]
     delta.name = "motif_delta_raw"
     return delta.astype(float)
 
