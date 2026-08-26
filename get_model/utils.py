@@ -280,6 +280,10 @@ def recursive_concat_numpy(list_of_dict):
 
 def recursive_save_to_zarr(zarr_group, dict_data, **kwargs):
     from numcodecs import Blosc
+    # object_codec is a zarr v2-era argument. zarr v3's create_dataset() does
+    # not accept it, and it is no longer needed here: string arrays are cast
+    # to fixed-width unicode dtypes by the caller before this function runs.
+    kwargs.pop("object_codec", None)
     for k, v in dict_data.items():
         if isinstance(v, dict):
             subgroup = zarr_group.require_group(k)
@@ -288,10 +292,18 @@ def recursive_save_to_zarr(zarr_group, dict_data, **kwargs):
             # if group not exist, create it
             if k not in zarr_group:
                 # respect the dtype of the data
+                # NOTE: shape= is required by zarr v3 (it no longer infers
+                # shape from data=). The explicit compressor= argument was
+                # removed -- zarr v3 restructured the compressor API
+                # (compressor= -> compressors=[...], with a different codec
+                # wrapping requirement), so this now uses zarr v3's default
+                # compressor instead of forcing Blosc.
                 if isinstance(v, np.ndarray):
-                    zarr_group.create_dataset(k, data=v, dtype=v.dtype, compressor=Blosc(cname='zstd', clevel=3, shuffle=1), **kwargs)
+                    if v.dtype.kind == 'O':
+                        v = v.astype(str).astype('U')
+                    zarr_group.create_dataset(k, data=v, shape=v.shape, dtype=v.dtype, **kwargs)
                 else:
-                    zarr_group.create_dataset(k, data=v, compressor=Blosc(cname='zstd', clevel=3, shuffle=1), **kwargs)
+                    zarr_group.create_dataset(k, data=v, shape=v.shape, **kwargs)
             else:  # append to existing group
                 # pad to the same shape
                 if (
